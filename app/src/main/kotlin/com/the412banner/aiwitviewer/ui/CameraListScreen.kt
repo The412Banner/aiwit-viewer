@@ -96,6 +96,7 @@ fun CameraListScreen(
 private fun DeviceRow(d: Device, onClick: () -> Unit) {
     ListItem(
         modifier = Modifier.clickable(onClick = onClick),
+        leadingContent = { LivePipTile(isOnline = d.state == 1) },
         headlineContent = { Text(d.name.ifBlank { d.device_sn }) },
         supportingContent = {
             Text("${d.oem.ifBlank { "?" }} • fw ${d.firmware_ver.ifBlank { "?" }} • bat ${formatBattery(d.battery_level)}")

@@ -27,6 +27,7 @@ import java.util.TimeZone
 @Composable
 fun ClipsScreen(
     deviceName: String,
+    isDeviceOnline: Boolean,
     clips: List<Recording>,
     selectedDateEpochMillis: Long,
     isLoading: Boolean,
@@ -110,6 +111,13 @@ fun ClipsScreen(
                 }
                 else -> {
                     LazyColumn(Modifier.fillMaxSize()) {
+                        item {
+                            LivePipBanner(
+                                deviceName = deviceName,
+                                isOnline = isDeviceOnline,
+                                modifier = Modifier.padding(12.dp),
+                            )
+                        }
                         items(clips, key = { it.fileName }) { c ->
                             ClipRow(c, onClick = { onSelectClip(c) }, onDownload = { onDownloadClip(c) })
                         }

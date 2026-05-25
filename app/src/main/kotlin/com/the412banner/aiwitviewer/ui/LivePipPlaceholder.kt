@@ -1,0 +1,85 @@
+package com.the412banner.aiwitviewer.ui
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Videocam
+import androidx.compose.material.icons.filled.VideocamOff
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.unit.dp
+
+/**
+ * Placeholder for the live PIP that we'll wire up once [[project-aiwit-re]]
+ * Phase 5c (libNatType.so RE) lands. For now it's a visual stub so the screen
+ * layout doesn't need to be re-shuffled when the real preview goes in.
+ *
+ * Two variants:
+ *   - [LivePipTile]   — small 16:9 tile used inline next to a camera row.
+ *   - [LivePipBanner] — full-width 16:9 banner used above the clips list.
+ */
+@Composable
+fun LivePipTile(
+    isOnline: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    Box(
+        modifier = modifier
+            .size(width = 96.dp, height = 54.dp)
+            .clip(RoundedCornerShape(6.dp))
+            .background(Color(0xFF101010))
+            .border(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.4f), RoundedCornerShape(6.dp)),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(
+            imageVector = if (isOnline) Icons.Filled.Videocam else Icons.Filled.VideocamOff,
+            contentDescription = if (isOnline) "Live preview" else "Camera offline",
+            tint = if (isOnline) Color(0xFF4CAF50) else Color(0xFF555555),
+        )
+    }
+}
+
+@Composable
+fun LivePipBanner(
+    deviceName: String,
+    isOnline: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    Box(
+        modifier = modifier
+            .fillMaxWidth()
+            .aspectRatio(16f / 9f)
+            .clip(RoundedCornerShape(8.dp))
+            .background(Color(0xFF101010))
+            .border(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.4f), RoundedCornerShape(8.dp)),
+        contentAlignment = Alignment.Center,
+    ) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Icon(
+                imageVector = if (isOnline) Icons.Filled.Videocam else Icons.Filled.VideocamOff,
+                contentDescription = null,
+                tint = if (isOnline) Color(0xFF4CAF50) else Color(0xFF555555),
+                modifier = Modifier.size(48.dp),
+            )
+            Spacer(Modifier.height(8.dp))
+            Text(
+                if (isOnline) "$deviceName • live preview pending" else "$deviceName • offline",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+            )
+            Text(
+                "(implemented once P2P RE lands)",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f),
+            )
+        }
+    }
+}

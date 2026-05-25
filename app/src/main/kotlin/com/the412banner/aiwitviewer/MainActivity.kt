@@ -22,6 +22,7 @@ import com.the412banner.aiwitviewer.data.Recording
 import com.the412banner.aiwitviewer.ui.CameraListScreen
 import com.the412banner.aiwitviewer.ui.ClipsScreen
 import com.the412banner.aiwitviewer.ui.LoginScreen
+import com.the412banner.aiwitviewer.ui.PlayerScreen
 import com.the412banner.aiwitviewer.ui.epochMillisToYyyymmdd
 import kotlinx.coroutines.launch
 import java.util.UUID
@@ -30,6 +31,7 @@ sealed interface Screen {
     data object Login : Screen
     data object Cameras : Screen
     data class Clips(val device: Device) : Screen
+    data class Player(val clip: Recording, val device: Device) : Screen
 }
 
 class MainActivity : ComponentActivity() {
@@ -145,6 +147,7 @@ class MainActivity : ComponentActivity() {
 
             is Screen.Clips -> ClipsScreen(
                 deviceName = s.device.name.ifBlank { s.device.device_sn },
+                isDeviceOnline = s.device.state == 1,
                 clips = clips,
                 selectedDateEpochMillis = selectedDateMillis,
                 isLoading = clipsLoading,
@@ -172,12 +175,17 @@ class MainActivity : ComponentActivity() {
                     )
                 },
                 onSelectClip = { clip ->
-                    // Playback wiring is the next session's job.
-                    clipsError = "Playback coming next session — clip URL ready, native player not wired yet."
+                    screen = Screen.Player(clip, s.device)
                 },
                 onDownloadClip = { clip ->
                     enqueueDownload(clip)
                 },
+            )
+
+            is Screen.Player -> PlayerScreen(
+                clip = s.clip,
+                cacheDirPath = cacheDir.absolutePath,
+                onBack = { screen = Screen.Clips(s.device) },
             )
         }
     }

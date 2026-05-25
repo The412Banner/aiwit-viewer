@@ -11,5 +11,5 @@ captures/
 *.aab
 *.keystore
 
-# Don't commit captured credentials or vendor binaries used for analysis
-app/src/main/jniLibs/arm64-v8a/*.so
+# Native libraries bundled in jniLibs/ ARE committed — they're required at
+# runtime and the build needs them. See LIBS_NOTICE.md for provenance.
