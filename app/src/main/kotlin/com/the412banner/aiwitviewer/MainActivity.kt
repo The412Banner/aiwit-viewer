@@ -185,6 +185,7 @@ class MainActivity : ComponentActivity() {
             is Screen.Player -> PlayerScreen(
                 clip = s.clip,
                 cacheDirPath = cacheDir.absolutePath,
+                signedUrlProvider = { rec -> client.signedDownloadUrl(rec, expiresIn = 600) },
                 onBack = { screen = Screen.Clips(s.device) },
             )
         }
