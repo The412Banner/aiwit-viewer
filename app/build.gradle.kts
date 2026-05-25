@@ -98,4 +98,9 @@ dependencies {
 
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.2")
+
+    // Used by the verbatim-copied n1.* protocol code (Ascii.DEL constant +
+    // UnsignedBytes byte/int conversion helpers). Cheaper to pull in Guava
+    // than to fork the parser.
+    implementation("com.google.guava:guava:32.1.3-android")
 }
