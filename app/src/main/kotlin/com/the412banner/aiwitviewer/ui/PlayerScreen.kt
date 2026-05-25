@@ -127,8 +127,19 @@ fun PlayerScreen(
             if (errorText != null) {
                 Text("Error: $errorText", color = MaterialTheme.colorScheme.error)
             } else {
+                // Use the lib's reported width/height from onCheckoutInfo so the
+                // surface matches the recording's native aspect ratio rather than
+                // stretching to the screen. Doorbells are usually 16:9 but Front
+                // Door / older firmware ship 4:3, so we can't hardcode.
+                val videoAspect = if (videoWidth > 0 && videoHeight > 0) {
+                    videoWidth.toFloat() / videoHeight.toFloat()
+                } else {
+                    16f / 9f
+                }
                 AndroidView(
-                    modifier = Modifier.fillMaxSize(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .aspectRatio(videoAspect),
                     factory = { ctx ->
                         SurfaceView(ctx).also { sv ->
                             sv.holder.addCallback(object : SurfaceHolder.Callback {
