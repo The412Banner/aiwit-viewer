@@ -59,21 +59,10 @@ class MainActivity : ComponentActivity() {
         messaging.setOnState { state ->
             android.util.Log.i("CloudMsg", "state=$state")
             if (state == CloudMessagingClient.State.Connected) {
-                // Best-guess login: send our REST session id. Server will either
-                // accept, reject with a clear error cmd, or close the socket.
-                // Whichever happens tells us what to send next session.
-                val sid = client.currentSession()
-                if (sid != null) {
-                    messaging.sendJson(
-                        org.json.JSONObject().apply {
-                            put("cmd", "login")
-                            put("session_id", sid)
-                            put("appSn", creds.appSn ?: "")
-                            put("os", "2")
-                            put("app_version", "3.5.6")
-                        }
-                    )
-                }
+                // Send the real cmd-server handshake (matches m1/a.java line 148).
+                val appSn = creds.appSn ?: return@setOnState
+                val email = creds.email ?: return@setOnState
+                messaging.sendAppLogin(appSn = appSn, username = email)
             }
         }
 

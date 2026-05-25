@@ -47,7 +47,14 @@ class CloudMessagingClient(
     private val serverHost: String = "8.222.190.34",
     private val serverPort: Int = 8891,
 ) {
-    companion object { private const val TAG = "CloudMsg" }
+    companion object {
+        private const val TAG = "CloudMsg"
+        // From DoorbellApplication.f13706c — same value used for the cmd-server
+        // signature across every outgoing command in m1/a.java.
+        private const val CMD_SIGN_SALT = "eead%Hb27Zf$v#vG"
+        private const val APP_NAME = "aiwit"
+        private const val PLATFORM_ID = 0  // f13751n0
+    }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     @Volatile private var socket: SSLSocket? = null
@@ -86,6 +93,30 @@ class CloudMessagingClient(
                 onState?.invoke(State.Failed)
             }
         }
+    }
+
+    /**
+     * Send the cmd-server's `app-login` handshake. Matches m1/a.java line 148
+     * verbatim: cmd + udid + username + pushToken + lang + platform_id +
+     * AppName + a "k" signature built as "0" + MD5(salt + udid + "app-login").
+     */
+    fun sendAppLogin(appSn: String, username: String, pushToken: String = "pushToken", lang: String = "en") {
+        val k = "0" + md5Hex("$CMD_SIGN_SALT$appSn" + "app-login")
+        sendJson(org.json.JSONObject().apply {
+            put("cmd", "app-login")
+            put("udid", appSn)
+            put("username", username)
+            put("pushToken", pushToken)
+            put("lang", lang)
+            put("platform_id", PLATFORM_ID)
+            put("AppName", APP_NAME)
+            put("k", k)
+        })
+    }
+
+    private fun md5Hex(s: String): String {
+        val bytes = java.security.MessageDigest.getInstance("MD5").digest(s.toByteArray())
+        return bytes.joinToString("") { "%02x".format(it) }
     }
 
     fun sendJson(payload: org.json.JSONObject) {
