@@ -16,6 +16,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.lifecycleScope
 import com.the412banner.aiwitviewer.data.AiwitClient
+import com.the412banner.aiwitviewer.data.CloudMessagingClient
 import com.the412banner.aiwitviewer.data.CredentialStore
 import com.the412banner.aiwitviewer.data.Device
 import com.the412banner.aiwitviewer.data.LocalAliasStore
@@ -39,6 +40,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var creds: CredentialStore
     private lateinit var aliases: LocalAliasStore
     private lateinit var client: AiwitClient
+    private val messaging = CloudMessagingClient()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -46,6 +48,34 @@ class MainActivity : ComponentActivity() {
         aliases = LocalAliasStore(this)
         val appSn = creds.appSn ?: "APK_${UUID.randomUUID()}".also { creds.appSn = it }
         client = AiwitClient(appSn)
+
+        // Connect the diagnostic messaging client as soon as we have a session.
+        // It logs everything to logcat under the "CloudMsg" tag so we can
+        // characterize the protocol from the live server without needing
+        // another mitmproxy pass.
+        messaging.setOnMessage { obj ->
+            android.util.Log.i("CloudMsg", "parsed-msg cmd=${obj.optString("cmd")} keys=${obj.keys().asSequence().toList()}")
+        }
+        messaging.setOnState { state ->
+            android.util.Log.i("CloudMsg", "state=$state")
+            if (state == CloudMessagingClient.State.Connected) {
+                // Best-guess login: send our REST session id. Server will either
+                // accept, reject with a clear error cmd, or close the socket.
+                // Whichever happens tells us what to send next session.
+                val sid = client.currentSession()
+                if (sid != null) {
+                    messaging.sendJson(
+                        org.json.JSONObject().apply {
+                            put("cmd", "login")
+                            put("session_id", sid)
+                            put("appSn", creds.appSn ?: "")
+                            put("os", "2")
+                            put("app_version", "3.5.6")
+                        }
+                    )
+                }
+            }
+        }
 
         setContent {
             val scheme = remember { darkColorScheme() }
@@ -257,10 +287,18 @@ class MainActivity : ComponentActivity() {
                     client.login(u, p)
                 }
                 onResult(client.listDevices(), null)
+                // After we have a session, kick the diagnostic messaging client.
+                // Best-effort; if it fails the rest of the app is unaffected.
+                messaging.connect()
             } catch (e: Exception) {
                 onResult(emptyList(), e.message ?: e.javaClass.simpleName)
             }
         }
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        messaging.close()
     }
 
     private fun refreshClips(
