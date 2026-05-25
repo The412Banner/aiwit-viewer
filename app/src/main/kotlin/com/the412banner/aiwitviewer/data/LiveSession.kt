@@ -5,6 +5,7 @@ import android.graphics.Bitmap
 import android.util.Log
 import cn.coderfly.ezmediautils.EZMediaUtils
 import com.eken.doorbell.p2p.P2PSession
+import com.eken.nat.Nat
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -63,6 +64,12 @@ class LiveSession(private val context: Context) {
         }
         val stun = config.stun_servers.firstOrNull() ?: HostPort("", 0)
 
+        // Kick the lib's internal NAT-discovery loop. AIWIT calls this in
+        // DevicePreview to display the NAT type, but it appears the side effect
+        // of triggering NAT discovery is what populates the relay-peer table.
+        val natType = try { Nat.getNatType() } catch (t: Throwable) { Log.w(TAG, "Nat.getNatType threw", t); -1 }
+        Log.i(TAG, "Nat.getNatType() = $natType (pre-bootstrap)")
+
         Log.i(TAG, "P2P setEncrypt($encrypted) + loginP2P apkId=$appSn p2p=${p2p.ip}:${p2p.port} stun=${stun.ip}:${stun.port}")
         val session = P2PSession.getInstance(context)
         try {
@@ -106,6 +113,20 @@ class LiveSession(private val context: Context) {
         listener = cb
         session.addListener(cb)
         loggedIn = true
+
+        // Periodically poll Nat.getNatType() and P2PSession.getNatType() — AIWIT
+        // does this once per second (visible as `natType... 0` in libVCTP2P logs).
+        // Without these polls the lib's internal NAT machinery appears to stall.
+        scope.launch {
+            while (currentCoroutineContext().isActive) {
+                try {
+                    val nt1 = Nat.getNatType()
+                    val nt2 = session.getNatType()
+                    if (Math.random() < 0.05) Log.d(TAG, "nat poll: nat=$nt1 p2p=$nt2 speed=${session.getSpeed()}")
+                } catch (_: Throwable) {}
+                delay(1000)
+            }
+        }
     }
 
     /** Hand off the cmd-server's `preview-start` reply: cache pk, kick connectToPeer + poller. */
