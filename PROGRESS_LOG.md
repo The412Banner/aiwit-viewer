@@ -169,3 +169,73 @@ the next step is `strace`-style hooking on the .so's network calls
   to feed it from P2PSession).
 - Two-way audio (EZAECSpeaker) not wired.
 
+---
+
+## 2026-05-25 — Session 2: Live-view bootstrap end-to-end almost works (commits up to `b935d25`)
+
+### What works
+- TLS to the actual cmd-server (`8.222.190.34:8891`, found via AIWIT's
+  `/proc/<pid>/net/tcp` after the firewall-filtered `47.107.28.145:9003`
+  fallback failed).
+- `app-login` handshake (cmd, udid, username, pushToken, lang, platform_id,
+  AppName, k = "0" + MD5(salt + udid + "app-login")).
+- Heartbeat with proper shape (cmd, udid, sn:<int>) every 20s — server
+  echoes back.
+- Subscribed to push notifications: device-heartbeat / device-state /
+  led-info flow in unsolicited.
+- `wakeup` (m1/a.java G) and `preview-start` (m1/a.java l).
+- `preview-start` reply carries area, ip, ipv6, video_port, audio_port,
+  speak_port, pk for the requested camera.
+- LiveSession orchestrator: parses list_v2 config, picks
+  p2p_encrypt_servers when present, calls `P2PSession.setEncrypt(true)`
+  then `loginP2P()`, then on preview-start reply caches the pk and calls
+  `connectToPeer(deviceSn)`, then a poller coroutine pulls n1.b frames
+  from n1.a, decodes via `EZMediaUtils.decodeFrameWithData` → emits
+  Bitmaps via StateFlow → renders into `LivePipBanner`.
+
+### Where it stalls — empty peer-address list
+After connectToPeer, the native lib logs `>>>p2p: list addr (empty)`
+every 200ms — it's polling for known peer addresses and finding none.
+`p2pConnected` callback never fires. Diagnosis:
+- `stun_servers[0] = 47.107.28.145:17051` from list_v2 config is
+  **firewall-filtered** from US networks (verified earlier with nmap —
+  same dead IP as the legacy push_server fallback).
+- `p2p_servers[0] = 47.245.120.253:17051` is open (verified).
+- `chat_servers[0] = 47.236.9.175:29007` is open (verified).
+- `47.251.54.119` is the US-region relay that the cloud points
+  preview-start replies at — closed on `:17051` but listens on the
+  ephemeral ports the cmd-server hands back.
+- Native lib's STUN attempts to `47.107.28.145:17051` time out silently
+  → its `list addr` stays empty → connectToPeer can't pick a peer
+  → no traffic.
+
+### Hypotheses to chase next session
+1. AIWIT's `m1.f` connection passes additional state to the .so that we
+   don't (the lib may have its OWN cmd-server connection that we're
+   bypassing because we own ours).
+2. A different STUN server is in play — possibly Google's public STUN
+   if the lib has a fallback, or the lib expects to extract our public
+   IP from the cmd-server's `app-login` reply `ip:<our_public>` (which
+   it would only see if it owned the cmd-server connection).
+3. Native lib expects `Nat.getNatType()` to be called before loginP2P
+   to seed its NAT discovery (AIWIT only calls it for stats but maybe
+   the side-effect matters).
+4. We may need to forward the `preview-start` reply (ip+ports) into
+   the native lib via some path we haven't identified — possibly via
+   the `peer` arg of a different method we're not calling.
+
+### Next-session entry points
+- Inspect AIWIT's `/proc/<pid>/net/tcp` while it's mid-live-view to see
+  every endpoint the lib touches.
+- `strace` the native lib's connect/sendto calls if we can get a
+  rooted-debug build.
+- Read `m1.f.F()` end-to-end + the thread runners (`a/b/d/e`) to see
+  exactly which JNI calls AIWIT makes between connect and frame-receive.
+
+### Repo state at session 2 end
+- Last commit: `b935d25` (wakeup-first sequence).
+- Build green at `26423282639`.
+- APK at `/sdcard/Download/aiwit-viewer-debug.apk` works for everything
+  except live frames (login + cameras list + recordings playback all
+  device-verified).
+
