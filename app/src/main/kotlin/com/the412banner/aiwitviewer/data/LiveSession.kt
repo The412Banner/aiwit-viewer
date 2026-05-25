@@ -117,7 +117,7 @@ class LiveSession(private val context: Context) {
     fun stop(deviceSn: String) {
         pollerJobs.remove(deviceSn)?.cancel()
         try { P2PSession.getInstance(context).disconnectToPeer(deviceSn) } catch (_: Throwable) {}
-        connected(deviceSn).value = false
+        connectedFlows[deviceSn]?.value = false
         frameFlows[deviceSn]?.value = null
     }
 
