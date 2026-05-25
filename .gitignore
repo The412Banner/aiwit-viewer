@@ -10,6 +10,8 @@ captures/
 *.apk
 *.aab
 *.keystore
+# Exception: keep the stable debug keystore so CI builds are upgradable.
+!app/debug.keystore
 
 # Native libraries bundled in jniLibs/ ARE committed — they're required at
 # runtime and the build needs them. See LIBS_NOTICE.md for provenance.
