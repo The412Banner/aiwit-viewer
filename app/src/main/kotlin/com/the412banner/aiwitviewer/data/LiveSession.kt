@@ -70,7 +70,7 @@ class LiveSession(private val context: Context) {
         val cb = object : P2PSession.P2PClientCall {
             override fun p2pConnected(sn: String?, ok: Boolean) {
                 Log.i(TAG, "p2pConnected sn=$sn ok=$ok")
-                if (sn != null) connected(sn).value = ok
+                if (sn != null) connectedFlows.getOrPut(sn) { MutableStateFlow(false) }.value = ok
             }
             @Throws(JSONException::class, IOException::class)
             override fun p2pReceiveDataCall(sn: String?, bytes: ByteArray?, len: Int) {
@@ -141,7 +141,8 @@ class LiveSession(private val context: Context) {
             }
             if (bmp != null) {
                 framesDecoded++
-                frameFlows.getOrPut(deviceSn) { MutableStateFlow(null) }.value = bmp
+                val flow = frameFlows.getOrPut(deviceSn) { MutableStateFlow<Bitmap?>(null) }
+                flow.value = bmp
             }
             val now = System.currentTimeMillis()
             if (now - lastLogAt > 2000) {
