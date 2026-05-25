@@ -53,6 +53,48 @@ fun LivePipBanner(
     isOnline: Boolean,
     modifier: Modifier = Modifier,
 ) {
+    LivePipBannerLayout(modifier = modifier) {
+        Icon(
+            imageVector = if (isOnline) Icons.Filled.Videocam else Icons.Filled.VideocamOff,
+            contentDescription = null,
+            tint = if (isOnline) Color(0xFF4CAF50) else Color(0xFF555555),
+            modifier = Modifier.size(48.dp),
+        )
+        Spacer(Modifier.height(8.dp))
+        Text(
+            if (isOnline) "$deviceName • live preview pending" else "$deviceName • offline",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+        )
+        Text(
+            "(implemented once P2P RE lands)",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f),
+        )
+    }
+}
+
+/** Top banner shown on the Cameras screen when no camera has been tapped yet. */
+@Composable
+fun LivePipBannerEmpty(modifier: Modifier = Modifier) {
+    LivePipBannerLayout(modifier = modifier) {
+        Icon(
+            imageVector = Icons.Filled.Videocam,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.outline,
+            modifier = Modifier.size(48.dp),
+        )
+        Spacer(Modifier.height(8.dp))
+        Text(
+            "Tap a camera below to view",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+        )
+    }
+}
+
+@Composable
+private fun LivePipBannerLayout(modifier: Modifier, content: @Composable () -> Unit) {
     Box(
         modifier = modifier
             .fillMaxWidth()
@@ -62,24 +104,6 @@ fun LivePipBanner(
             .border(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.4f), RoundedCornerShape(8.dp)),
         contentAlignment = Alignment.Center,
     ) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            Icon(
-                imageVector = if (isOnline) Icons.Filled.Videocam else Icons.Filled.VideocamOff,
-                contentDescription = null,
-                tint = if (isOnline) Color(0xFF4CAF50) else Color(0xFF555555),
-                modifier = Modifier.size(48.dp),
-            )
-            Spacer(Modifier.height(8.dp))
-            Text(
-                if (isOnline) "$deviceName • live preview pending" else "$deviceName • offline",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
-            )
-            Text(
-                "(implemented once P2P RE lands)",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f),
-            )
-        }
+        Column(horizontalAlignment = Alignment.CenterHorizontally) { content() }
     }
 }

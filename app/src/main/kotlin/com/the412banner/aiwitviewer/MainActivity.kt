@@ -18,11 +18,13 @@ import androidx.lifecycle.lifecycleScope
 import com.the412banner.aiwitviewer.data.AiwitClient
 import com.the412banner.aiwitviewer.data.CredentialStore
 import com.the412banner.aiwitviewer.data.Device
+import com.the412banner.aiwitviewer.data.LocalAliasStore
 import com.the412banner.aiwitviewer.data.Recording
 import com.the412banner.aiwitviewer.ui.CameraListScreen
 import com.the412banner.aiwitviewer.ui.ClipsScreen
 import com.the412banner.aiwitviewer.ui.LoginScreen
 import com.the412banner.aiwitviewer.ui.PlayerScreen
+import com.the412banner.aiwitviewer.ui.RenameDialog
 import com.the412banner.aiwitviewer.ui.epochMillisToYyyymmdd
 import kotlinx.coroutines.launch
 import java.util.UUID
@@ -37,11 +39,13 @@ sealed interface Screen {
 class MainActivity : ComponentActivity() {
 
     private lateinit var creds: CredentialStore
+    private lateinit var aliases: LocalAliasStore
     private lateinit var client: AiwitClient
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         creds = CredentialStore(this)
+        aliases = LocalAliasStore(this)
         val appSn = creds.appSn ?: "APK_${UUID.randomUUID()}".also { creds.appSn = it }
         client = AiwitClient(appSn)
 
@@ -69,6 +73,10 @@ class MainActivity : ComponentActivity() {
         var devices by remember { mutableStateOf<List<Device>>(emptyList()) }
         var devicesLoading by remember { mutableStateOf(false) }
         var devicesError by remember { mutableStateOf<String?>(null) }
+        var selectedDeviceSn by remember { mutableStateOf<String?>(null) }
+        var renameTarget by remember { mutableStateOf<Device?>(null) }
+        // Bump this to force the list to re-resolve display names after a rename.
+        var aliasRevision by remember { mutableIntStateOf(0) }
 
         // Clips
         var clips by remember { mutableStateOf<List<Recording>>(emptyList()) }
@@ -112,41 +120,73 @@ class MainActivity : ComponentActivity() {
                 },
             )
 
-            Screen.Cameras -> CameraListScreen(
-                devices = devices,
-                isLoading = devicesLoading,
-                errorText = devicesError,
-                onRefresh = {
-                    refreshDevices(
-                        onStart = { devicesLoading = true; devicesError = null },
-                        onResult = { result, err ->
-                            devicesLoading = false
-                            if (err == null) devices = result else devicesError = err
+            Screen.Cameras -> {
+                // Read aliasRevision so re-composition observes rename writes.
+                aliasRevision
+                CameraListScreen(
+                    devices = devices,
+                    selectedDeviceSn = selectedDeviceSn,
+                    displayNameFor = { aliases.displayName(it) },
+                    isLoading = devicesLoading,
+                    errorText = devicesError,
+                    onRefresh = {
+                        refreshDevices(
+                            onStart = { devicesLoading = true; devicesError = null },
+                            onResult = { result, err ->
+                                devicesLoading = false
+                                if (err == null) devices = result else devicesError = err
+                            },
+                        )
+                    },
+                    onLogout = {
+                        creds.clear()
+                        devices = emptyList()
+                        selectedDeviceSn = null
+                        screen = Screen.Login
+                    },
+                    onSelectDevice = { d -> selectedDeviceSn = d.device_sn },
+                    onOpenClips = { d ->
+                        selectedDeviceSn = d.device_sn
+                        selectedDateMillis = System.currentTimeMillis()
+                        screen = Screen.Clips(d)
+                        refreshClips(
+                            device = d,
+                            yyyymmdd = epochMillisToYyyymmdd(selectedDateMillis),
+                            onStart = { clipsLoading = true; clipsError = null; clips = emptyList() },
+                            onResult = { result, err ->
+                                clipsLoading = false
+                                if (err == null) clips = result else clipsError = err
+                            },
+                        )
+                    },
+                    onSnapshot = {
+                        Toast.makeText(
+                            this@MainActivity,
+                            "Snapshot will work once live view is wired up (Phase 5c).",
+                            Toast.LENGTH_SHORT,
+                        ).show()
+                    },
+                    onRequestRename = { d -> renameTarget = d },
+                )
+
+                renameTarget?.let { target ->
+                    RenameDialog(
+                        initialName = aliases.displayName(target),
+                        onDismiss = { renameTarget = null },
+                        onConfirm = { newName ->
+                            val typed = newName.trim()
+                            // Empty input → clear the alias and fall back to vendor name
+                            val alias = typed.takeIf { it.isNotBlank() && it != target.name }
+                            aliases.setAlias(target.device_sn, alias)
+                            aliasRevision++
+                            renameTarget = null
                         },
                     )
-                },
-                onLogout = {
-                    creds.clear()
-                    devices = emptyList()
-                    screen = Screen.Login
-                },
-                onSelectDevice = { d ->
-                    selectedDateMillis = System.currentTimeMillis()
-                    screen = Screen.Clips(d)
-                    refreshClips(
-                        device = d,
-                        yyyymmdd = epochMillisToYyyymmdd(selectedDateMillis),
-                        onStart = { clipsLoading = true; clipsError = null; clips = emptyList() },
-                        onResult = { result, err ->
-                            clipsLoading = false
-                            if (err == null) clips = result else clipsError = err
-                        },
-                    )
-                },
-            )
+                }
+            }
 
             is Screen.Clips -> ClipsScreen(
-                deviceName = s.device.name.ifBlank { s.device.device_sn },
+                deviceName = aliases.displayName(s.device),
                 isDeviceOnline = s.device.state == 1,
                 clips = clips,
                 selectedDateEpochMillis = selectedDateMillis,
