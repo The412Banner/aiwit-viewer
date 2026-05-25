@@ -149,9 +149,23 @@ class CloudMessagingClient(
     }
 
     /**
-     * Wake a camera and request a live-view session. Matches m1/a.java line 339.
-     * Server should answer (asynchronously, possibly via a separate push) with
-     * `cmd:"preview-start"` carrying the live-session params: ip, video_port,
+     * Wake a battery-powered doorbell. Matches m1/a.java line 117 (`G(str)`).
+     * Doorbells in EKEN's lineup go into a deep-sleep mode; preview-start
+     * alone returns cached session metadata but the doorbell won't actually
+     * be online to peer with us. wakeup -> short delay -> preview-start
+     * is the working sequence.
+     */
+    fun sendWakeup(appSn: String, deviceSn: String) {
+        sendJson(org.json.JSONObject().apply {
+            put("cmd", "wakeup")
+            put("udid", appSn)
+            put("peer", deviceSn)
+        })
+    }
+
+    /**
+     * Request a live-view session. Matches m1/a.java line 339.
+     * Server replies with `cmd:"preview-start"` carrying ip, video_port,
      * audio_port, speak_port, pk.
      */
     fun sendPreviewStart(appSn: String, deviceSn: String) {

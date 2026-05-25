@@ -178,7 +178,16 @@ class MainActivity : ComponentActivity() {
                     onSelectDevice = { d ->
                         selectedDeviceSn = d.device_sn
                         val sn = creds.appSn
-                        if (sn != null) messaging.sendPreviewStart(sn, d.device_sn)
+                        if (sn != null) {
+                            // Battery-powered doorbells: send wakeup first, then
+                            // preview-start ~1.5s later so the camera has a chance
+                            // to come online before the cloud relays the session.
+                            messaging.sendWakeup(sn, d.device_sn)
+                            lifecycleScope.launch {
+                                kotlinx.coroutines.delay(1500)
+                                messaging.sendPreviewStart(sn, d.device_sn)
+                            }
+                        }
                     },
                     onOpenClips = { d ->
                         selectedDeviceSn = d.device_sn
