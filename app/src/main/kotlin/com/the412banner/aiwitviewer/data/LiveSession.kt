@@ -48,19 +48,23 @@ class LiveSession(private val context: Context) {
         if (loggedIn) return
         this.appSn = appSn
 
-        val p2pServers = if (config.enable_tls_encryption == 1 && config.p2p_encrypt_servers.isNotEmpty()) {
-            config.p2p_encrypt_servers
-        } else {
-            config.p2p_servers
-        }
+        // AIWIT (o1/u0.java:3049) prefers p2p_encrypt_servers if present,
+        // regardless of enable_tls_encryption. The boolean is just an "encrypted
+        // mode" hint that gets passed to setEncrypt(true) immediately before
+        // loginP2P. Skipping setEncrypt was the bug in the first attempt — the
+        // native lib defaults to plain mode and the TLS relay silently drops
+        // un-encrypted handshakes.
+        val encrypted = config.p2p_encrypt_servers.isNotEmpty()
+        val p2pServers = if (encrypted) config.p2p_encrypt_servers else config.p2p_servers
         val p2p = p2pServers.firstOrNull() ?: run {
             Log.e(TAG, "no p2p server in config"); return
         }
         val stun = config.stun_servers.firstOrNull() ?: HostPort("", 0)
 
-        Log.i(TAG, "P2P loginP2P apkId=$appSn p2p=${p2p.ip}:${p2p.port} stun=${stun.ip}:${stun.port}")
+        Log.i(TAG, "P2P setEncrypt($encrypted) + loginP2P apkId=$appSn p2p=${p2p.ip}:${p2p.port} stun=${stun.ip}:${stun.port}")
         val session = P2PSession.getInstance(context)
         try {
+            session.setEncrypt(encrypted)
             session.loginP2P(appSn, p2p.ip, p2p.port, stun.ip, stun.port)
         } catch (t: Throwable) {
             Log.e(TAG, "loginP2P threw", t)
