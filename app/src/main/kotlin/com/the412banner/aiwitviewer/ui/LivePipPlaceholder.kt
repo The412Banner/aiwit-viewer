@@ -1,5 +1,7 @@
 package com.the412banner.aiwitviewer.ui
 
+import android.graphics.Bitmap
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
@@ -15,6 +17,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.dp
 
 /**
@@ -52,7 +56,26 @@ fun LivePipBanner(
     deviceName: String,
     isOnline: Boolean,
     modifier: Modifier = Modifier,
+    frame: Bitmap? = null,
 ) {
+    if (frame != null) {
+        Box(
+            modifier = modifier
+                .fillMaxWidth()
+                .aspectRatio(frame.width.toFloat() / frame.height.toFloat().coerceAtLeast(1f))
+                .clip(RoundedCornerShape(8.dp))
+                .background(Color.Black),
+            contentAlignment = Alignment.Center,
+        ) {
+            Image(
+                bitmap = frame.asImageBitmap(),
+                contentDescription = "Live preview of $deviceName",
+                modifier = Modifier.fillMaxSize(),
+                contentScale = ContentScale.Fit,
+            )
+        }
+        return
+    }
     LivePipBannerLayout(modifier = modifier) {
         Icon(
             imageVector = if (isOnline) Icons.Filled.Videocam else Icons.Filled.VideocamOff,
@@ -62,14 +85,9 @@ fun LivePipBanner(
         )
         Spacer(Modifier.height(8.dp))
         Text(
-            if (isOnline) "$deviceName • live preview pending" else "$deviceName • offline",
+            if (isOnline) "$deviceName • connecting…" else "$deviceName • offline",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
-        )
-        Text(
-            "(implemented once P2P RE lands)",
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f),
         )
     }
 }

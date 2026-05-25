@@ -1,5 +1,6 @@
 package com.the412banner.aiwitviewer.ui
 
+import android.graphics.Bitmap
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
@@ -21,6 +22,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.unit.dp
 import com.the412banner.aiwitviewer.data.Device
+import kotlinx.coroutines.flow.StateFlow
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -36,6 +38,7 @@ fun CameraListScreen(
     onOpenClips: (Device) -> Unit,
     onSnapshot: (Device) -> Unit,
     onRequestRename: (Device) -> Unit,
+    liveFrameFlow: (String) -> StateFlow<Bitmap?>,
 ) {
     val refreshState = rememberPullToRefreshState()
     // Only kick onRefresh when the user actually pulled — don't fire on initial composition.
@@ -64,14 +67,16 @@ fun CameraListScreen(
         },
     ) { padding ->
         Column(modifier = Modifier.padding(padding).fillMaxSize()) {
-            // Sticky top live area — placeholder until P2P RE lands.
+            // Sticky top live area — placeholder until frames arrive, then the live preview.
             Box(modifier = Modifier.padding(12.dp)) {
                 if (selected == null) {
                     LivePipBannerEmpty()
                 } else {
+                    val frame by liveFrameFlow(selected.device_sn).collectAsState()
                     LivePipBanner(
                         deviceName = displayNameFor(selected),
                         isOnline = selected.state == 1,
+                        frame = frame,
                     )
                 }
             }

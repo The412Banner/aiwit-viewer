@@ -33,6 +33,8 @@ class AiwitClient(private val appSn: String = "APK_${UUID.randomUUID()}") {
         private set
     @Volatile var uid: Long? = null
         private set
+    @Volatile var lastConfig: ConnectionConfig? = null
+        private set
     private var ossTokenCache: OssToken? = null
     private var ossTokenExpiresAt: Long = 0L
 
@@ -79,6 +81,7 @@ class AiwitClient(private val appSn: String = "APK_${UUID.randomUUID()}") {
         if (env.resultCode != 0 || env.content == null) {
             throw AiwitException("list_v2 failed: ${env.msg}")
         }
+        env.content.config?.let { this@AiwitClient.lastConfig = it }
         env.content.list
     }
 

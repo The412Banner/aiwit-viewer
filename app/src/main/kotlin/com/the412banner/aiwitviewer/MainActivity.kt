@@ -19,6 +19,7 @@ import com.the412banner.aiwitviewer.data.AiwitClient
 import com.the412banner.aiwitviewer.data.CloudMessagingClient
 import com.the412banner.aiwitviewer.data.CredentialStore
 import com.the412banner.aiwitviewer.data.Device
+import com.the412banner.aiwitviewer.data.LiveSession
 import com.the412banner.aiwitviewer.data.LocalAliasStore
 import com.the412banner.aiwitviewer.data.Recording
 import com.the412banner.aiwitviewer.ui.CameraListScreen
@@ -40,6 +41,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var creds: CredentialStore
     private lateinit var aliases: LocalAliasStore
     private lateinit var client: AiwitClient
+    private lateinit var live: LiveSession
     private val messaging = CloudMessagingClient()
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -48,13 +50,23 @@ class MainActivity : ComponentActivity() {
         aliases = LocalAliasStore(this)
         val appSn = creds.appSn ?: "APK_${UUID.randomUUID()}".also { creds.appSn = it }
         client = AiwitClient(appSn)
+        live = LiveSession(applicationContext)
 
         // Connect the diagnostic messaging client as soon as we have a session.
         // It logs everything to logcat under the "CloudMsg" tag so we can
         // characterize the protocol from the live server without needing
         // another mitmproxy pass.
         messaging.setOnMessage { obj ->
-            android.util.Log.i("CloudMsg", "parsed-msg cmd=${obj.optString("cmd")} keys=${obj.keys().asSequence().toList()}")
+            val cmd = obj.optString("cmd")
+            android.util.Log.i("CloudMsg", "parsed-msg cmd=$cmd keys=${obj.keys().asSequence().toList()}")
+            // Route preview-start replies into the live session
+            if (cmd == "preview-start" && obj.optInt("err_no", -1) == 0) {
+                val peer = obj.optString("peer", "")
+                val pk = obj.optString("pk", "")
+                if (peer.isNotBlank() && pk.isNotBlank()) {
+                    live.onPreviewStartReply(peer, pk)
+                }
+            }
         }
         messaging.setOnState { state ->
             android.util.Log.i("CloudMsg", "state=$state")
@@ -163,7 +175,11 @@ class MainActivity : ComponentActivity() {
                         selectedDeviceSn = null
                         screen = Screen.Login
                     },
-                    onSelectDevice = { d -> selectedDeviceSn = d.device_sn },
+                    onSelectDevice = { d ->
+                        selectedDeviceSn = d.device_sn
+                        val sn = creds.appSn
+                        if (sn != null) messaging.sendPreviewStart(sn, d.device_sn)
+                    },
                     onOpenClips = { d ->
                         selectedDeviceSn = d.device_sn
                         selectedDateMillis = System.currentTimeMillis()
@@ -193,6 +209,7 @@ class MainActivity : ComponentActivity() {
                         }
                     },
                     onRequestRename = { d -> renameTarget = d },
+                    liveFrameFlow = { sn -> live.frames(sn) },
                 )
 
                 renameTarget?.let { target ->
@@ -282,9 +299,14 @@ class MainActivity : ComponentActivity() {
                     val p = creds.password ?: throw IllegalStateException("No saved password")
                     client.login(u, p)
                 }
-                onResult(client.listDevices(), null)
+                val devs = client.listDevices()
+                onResult(devs, null)
+                // Bootstrap the live P2P stack with the config block we just got.
+                client.lastConfig?.let { cfg ->
+                    val sn = creds.appSn ?: return@let
+                    live.bootstrap(sn, cfg)
+                }
                 // After we have a session, kick the diagnostic messaging client.
-                // Best-effort; if it fails the rest of the app is unaffected.
                 messaging.connect()
             } catch (e: Exception) {
                 onResult(emptyList(), e.message ?: e.javaClass.simpleName)

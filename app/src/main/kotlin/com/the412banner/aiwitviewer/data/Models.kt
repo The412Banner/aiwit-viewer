@@ -21,6 +21,32 @@ data class LoginContent(
 @Serializable
 data class DeviceListContent(
     val list: List<Device> = emptyList(),
+    val config: ConnectionConfig? = null,
+)
+
+@Serializable
+data class ConnectionConfig(
+    val cmd_servers: List<HostPortTls> = emptyList(),
+    val p2p_servers: List<HostPort> = emptyList(),
+    val p2p_encrypt_servers: List<HostPort> = emptyList(),
+    val stun_servers: List<HostPort> = emptyList(),
+    val chat_servers: List<HostPort> = emptyList(),
+    val enable_encryption: Int = 0,
+    val enable_tls_encryption: Int = 0,
+)
+
+@Serializable
+data class HostPort(
+    val ip: String = "",
+    val port: Int = 0,
+)
+
+@Serializable
+data class HostPortTls(
+    val ip: String = "",
+    val port: Int = 0,
+    val ssl_port: Int = 0,
+    val tls_port: Int = 0,
 )
 
 @Serializable
