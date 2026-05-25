@@ -32,9 +32,20 @@ import javax.net.ssl.X509TrustManager
  *
  * Cert pinning: same posture as AIWIT — trust-all (matches u1.q.a()).
  */
+/**
+ * Default endpoint reflects what AIWIT actually connects to (verified on a
+ * live device via /proc/<aiwit_pid>/net/tcp): `cmd_servers[0].tls_port` from
+ * the list_v2 response, which is `8.222.190.34:8891`. The same response
+ * also has a legacy `push_server: 47.107.28.145:9003` field that's a
+ * fallback for older firmware paths and is firewall-filtered from outside
+ * the China mainland.
+ *
+ * TODO once we know this connects, fetch the server map from list_v2's
+ * config block dynamically instead of hardcoding.
+ */
 class CloudMessagingClient(
-    private val serverHost: String = "47.107.28.145",
-    private val serverPort: Int = 9003,
+    private val serverHost: String = "8.222.190.34",
+    private val serverPort: Int = 8891,
 ) {
     companion object { private const val TAG = "CloudMsg" }
 
