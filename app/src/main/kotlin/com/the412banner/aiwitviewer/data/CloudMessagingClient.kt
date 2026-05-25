@@ -51,7 +51,9 @@ class CloudMessagingClient(
         private const val TAG = "CloudMsg"
         // From DoorbellApplication.f13706c — same value used for the cmd-server
         // signature across every outgoing command in m1/a.java.
-        private const val CMD_SIGN_SALT = "eead%Hb27Zf$v#vG"
+        // The `\$` escapes Kotlin string interpolation; the literal value is
+        // exactly `eead%Hb27Zf$v#vG`.
+        private const val CMD_SIGN_SALT = "eead%Hb27Zf\$v#vG"
         private const val APP_NAME = "aiwit"
         private const val PLATFORM_ID = 0  // f13751n0
     }
