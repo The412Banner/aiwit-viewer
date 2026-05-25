@@ -178,12 +178,19 @@ class MainActivity : ComponentActivity() {
                             },
                         )
                     },
-                    onSnapshot = {
-                        Toast.makeText(
-                            this@MainActivity,
-                            "Snapshot will work once live view is wired up (Phase 5c).",
-                            Toast.LENGTH_SHORT,
-                        ).show()
+                    onSnapshot = { d ->
+                        // Diagnostic: ask the cloud to wake this camera and reply with
+                        // a preview-start push containing the live-session params. Watch
+                        // logcat tag CloudMsg for the response.
+                        val appSn = creds.appSn
+                        if (appSn != null) {
+                            messaging.sendPreviewStart(appSn, d.device_sn)
+                            Toast.makeText(
+                                this@MainActivity,
+                                "preview-start sent for ${d.name.ifBlank { d.device_sn }} — watch logcat",
+                                Toast.LENGTH_SHORT,
+                            ).show()
+                        }
                     },
                     onRequestRename = { d -> renameTarget = d },
                 )

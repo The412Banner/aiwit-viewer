@@ -62,6 +62,11 @@ class CloudMessagingClient(
     @Volatile private var socket: SSLSocket? = null
     @Volatile private var readJob: Job? = null
     @Volatile private var heartbeatJob: Job? = null
+    @Volatile private var reconnectJob: Job? = null
+    @Volatile private var stopped: Boolean = false
+    private var hbSeq: Int = 0
+    @Volatile private var appSnForReconnect: String? = null
+    @Volatile private var emailForReconnect: String? = null
 
     private var onMessage: ((org.json.JSONObject) -> Unit)? = null
     private var onState: ((State) -> Unit)? = null
@@ -73,6 +78,7 @@ class CloudMessagingClient(
     fun setOnState(cb: (State) -> Unit) { onState = cb }
 
     fun connect() {
+        stopped = false
         if (socket?.isConnected == true) return
         onState?.invoke(State.Connecting)
         scope.launch {
@@ -82,18 +88,29 @@ class CloudMessagingClient(
                 }
                 val s = (ctx.socketFactory.createSocket() as SSLSocket).apply {
                     connect(InetSocketAddress(serverHost, serverPort), 15_000)
-                    soTimeout = 0 // blocking reads, heartbeat keeps it alive
+                    soTimeout = 0
                 }
                 socket = s
                 onState?.invoke(State.Connected)
                 Log.i(TAG, "TLS connected to $serverHost:$serverPort")
-
                 readJob = scope.launch { readLoop(s) }
                 heartbeatJob = scope.launch { heartbeatLoop() }
             } catch (e: Throwable) {
                 Log.e(TAG, "connect failed", e)
                 onState?.invoke(State.Failed)
+                scheduleReconnect()
             }
+        }
+    }
+
+    private fun scheduleReconnect() {
+        if (stopped) return
+        reconnectJob?.cancel()
+        reconnectJob = scope.launch {
+            delay(5_000)
+            if (stopped) return@launch
+            Log.i(TAG, "reconnecting…")
+            connect()
         }
     }
 
@@ -103,6 +120,8 @@ class CloudMessagingClient(
      * AppName + a "k" signature built as "0" + MD5(salt + udid + "app-login").
      */
     fun sendAppLogin(appSn: String, username: String, pushToken: String = "pushToken", lang: String = "en") {
+        appSnForReconnect = appSn
+        emailForReconnect = username
         val k = "0" + md5Hex("$CMD_SIGN_SALT$appSn" + "app-login")
         sendJson(org.json.JSONObject().apply {
             put("cmd", "app-login")
@@ -113,6 +132,33 @@ class CloudMessagingClient(
             put("platform_id", PLATFORM_ID)
             put("AppName", APP_NAME)
             put("k", k)
+        })
+    }
+
+    /**
+     * Heartbeat per m1/a.java line 274: `{cmd:"heartbeat", udid:<appSn>, sn:<int>}`.
+     * Our previous attempt used `{cmd:"heartbeat"}` which got us kicked.
+     */
+    fun sendHeartbeat(appSn: String) {
+        hbSeq++
+        sendJson(org.json.JSONObject().apply {
+            put("cmd", "heartbeat")
+            put("udid", appSn)
+            put("sn", hbSeq)
+        })
+    }
+
+    /**
+     * Wake a camera and request a live-view session. Matches m1/a.java line 339.
+     * Server should answer (asynchronously, possibly via a separate push) with
+     * `cmd:"preview-start"` carrying the live-session params: ip, video_port,
+     * audio_port, speak_port, pk.
+     */
+    fun sendPreviewStart(appSn: String, deviceSn: String) {
+        sendJson(org.json.JSONObject().apply {
+            put("cmd", "preview-start")
+            put("udid", appSn)
+            put("peer", deviceSn)
         })
     }
 
@@ -135,11 +181,21 @@ class CloudMessagingClient(
     }
 
     fun close() {
+        stopped = true
+        reconnectJob?.cancel()
         heartbeatJob?.cancel()
         readJob?.cancel()
         try { socket?.close() } catch (_: Throwable) {}
         socket = null
         onState?.invoke(State.Disconnected)
+    }
+
+    private fun handleDisconnect() {
+        try { socket?.close() } catch (_: Throwable) {}
+        socket = null
+        heartbeatJob?.cancel()
+        onState?.invoke(State.Disconnected)
+        scheduleReconnect()
     }
 
     private suspend fun readLoop(s: SSLSocket) {
@@ -159,7 +215,7 @@ class CloudMessagingClient(
             Log.w(TAG, "read loop ended", e)
         }
         Log.i(TAG, "readLoop exit")
-        close()
+        handleDisconnect()
     }
 
     /**
@@ -201,10 +257,10 @@ class CloudMessagingClient(
     }
 
     private suspend fun heartbeatLoop() {
-        val payload = org.json.JSONObject().apply { put("cmd", "heartbeat") }
         while (currentCoroutineContext().isActive) {
-            delay(30_000)
-            sendJson(payload)
+            delay(20_000)
+            val appSn = appSnForReconnect ?: continue
+            sendHeartbeat(appSn)
         }
     }
 
