@@ -1,6 +1,11 @@
 package com.the412banner.aiwitviewer
 
+import android.app.DownloadManager
+import android.content.Context
+import android.net.Uri
 import android.os.Bundle
+import android.os.Environment
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.fillMaxSize
@@ -17,10 +22,8 @@ import com.the412banner.aiwitviewer.data.Recording
 import com.the412banner.aiwitviewer.ui.CameraListScreen
 import com.the412banner.aiwitviewer.ui.ClipsScreen
 import com.the412banner.aiwitviewer.ui.LoginScreen
+import com.the412banner.aiwitviewer.ui.epochMillisToYyyymmdd
 import kotlinx.coroutines.launch
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
 import java.util.UUID
 
 sealed interface Screen {
@@ -69,6 +72,7 @@ class MainActivity : ComponentActivity() {
         var clips by remember { mutableStateOf<List<Recording>>(emptyList()) }
         var clipsLoading by remember { mutableStateOf(false) }
         var clipsError by remember { mutableStateOf<String?>(null) }
+        var selectedDateMillis by remember { mutableLongStateOf(System.currentTimeMillis()) }
 
         // Auto-login on first composition if creds saved
         LaunchedEffect(Unit) {
@@ -125,11 +129,11 @@ class MainActivity : ComponentActivity() {
                     screen = Screen.Login
                 },
                 onSelectDevice = { d ->
+                    selectedDateMillis = System.currentTimeMillis()
                     screen = Screen.Clips(d)
-                    val today = SimpleDateFormat("yyyyMMdd", Locale.US).format(Date())
                     refreshClips(
                         device = d,
-                        yyyymmdd = today,
+                        yyyymmdd = epochMillisToYyyymmdd(selectedDateMillis),
                         onStart = { clipsLoading = true; clipsError = null; clips = emptyList() },
                         onResult = { result, err ->
                             clipsLoading = false
@@ -142,14 +146,25 @@ class MainActivity : ComponentActivity() {
             is Screen.Clips -> ClipsScreen(
                 deviceName = s.device.name.ifBlank { s.device.device_sn },
                 clips = clips,
-                dayLabel = SimpleDateFormat("EEE, MMM d", Locale.US).format(Date()),
+                selectedDateEpochMillis = selectedDateMillis,
                 isLoading = clipsLoading,
                 errorText = clipsError,
                 onBack = { screen = Screen.Cameras },
                 onRefresh = {
-                    val today = SimpleDateFormat("yyyyMMdd", Locale.US).format(Date())
-                    refreshClips(s.device, today,
+                    refreshClips(
+                        s.device, epochMillisToYyyymmdd(selectedDateMillis),
                         onStart = { clipsLoading = true; clipsError = null },
+                        onResult = { result, err ->
+                            clipsLoading = false
+                            if (err == null) clips = result else clipsError = err
+                        },
+                    )
+                },
+                onPickDate = { newMillis ->
+                    selectedDateMillis = newMillis
+                    refreshClips(
+                        s.device, epochMillisToYyyymmdd(newMillis),
+                        onStart = { clipsLoading = true; clipsError = null; clips = emptyList() },
                         onResult = { result, err ->
                             clipsLoading = false
                             if (err == null) clips = result else clipsError = err
@@ -160,7 +175,34 @@ class MainActivity : ComponentActivity() {
                     // Playback wiring is the next session's job.
                     clipsError = "Playback coming next session — clip URL ready, native player not wired yet."
                 },
+                onDownloadClip = { clip ->
+                    enqueueDownload(clip)
+                },
             )
+        }
+    }
+
+    private fun enqueueDownload(clip: Recording) {
+        lifecycleScope.launch {
+            try {
+                val url = client.signedDownloadUrl(clip, expiresIn = 600)
+                val displayName = clip.fileName.substringAfterLast('/')
+                val request = DownloadManager.Request(Uri.parse(url))
+                    .setTitle(displayName)
+                    .setDescription("AIWIT clip from ${clip.deviceName.ifBlank { clip.deviceSn }}")
+                    .setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, displayName)
+                    .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+                    .setAllowedOverMetered(true)
+                val dm = getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
+                dm.enqueue(request)
+                Toast.makeText(this@MainActivity, "Downloading $displayName", Toast.LENGTH_SHORT).show()
+            } catch (e: Exception) {
+                Toast.makeText(
+                    this@MainActivity,
+                    "Download failed: ${e.message}",
+                    Toast.LENGTH_LONG,
+                ).show()
+            }
         }
     }
 

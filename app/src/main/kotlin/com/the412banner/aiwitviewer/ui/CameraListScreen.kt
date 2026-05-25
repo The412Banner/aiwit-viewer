@@ -6,10 +6,13 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Logout
-import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.*
-import androidx.compose.runtime.Composable
+import androidx.compose.material3.pulltorefresh.PullToRefreshContainer
+import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.unit.dp
 import com.the412banner.aiwitviewer.data.Device
 
@@ -23,14 +26,19 @@ fun CameraListScreen(
     onLogout: () -> Unit,
     onSelectDevice: (Device) -> Unit,
 ) {
+    val refreshState = rememberPullToRefreshState()
+    if (refreshState.isRefreshing) {
+        LaunchedEffect(Unit) { onRefresh() }
+    }
+    LaunchedEffect(isLoading) {
+        if (!isLoading) refreshState.endRefresh()
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(
                 title = { Text("Cameras") },
                 actions = {
-                    IconButton(onClick = onRefresh) {
-                        Icon(Icons.Filled.Refresh, contentDescription = "Refresh")
-                    }
                     IconButton(onClick = onLogout) {
                         Icon(Icons.Filled.Logout, contentDescription = "Log out")
                     }
@@ -38,13 +46,18 @@ fun CameraListScreen(
             )
         },
     ) { padding ->
-        Box(modifier = Modifier.padding(padding).fillMaxSize()) {
+        Box(
+            modifier = Modifier
+                .padding(padding)
+                .fillMaxSize()
+                .nestedScroll(refreshState.nestedScrollConnection),
+        ) {
             when {
                 isLoading && devices.isEmpty() -> {
                     Column(
                         modifier = Modifier.fillMaxSize(),
                         verticalArrangement = Arrangement.Center,
-                        horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally,
+                        horizontalAlignment = Alignment.CenterHorizontally,
                     ) {
                         CircularProgressIndicator()
                         Spacer(Modifier.height(12.dp))
@@ -55,23 +68,26 @@ fun CameraListScreen(
                     Column(
                         modifier = Modifier.padding(24.dp).fillMaxSize(),
                         verticalArrangement = Arrangement.Center,
-                        horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally,
+                        horizontalAlignment = Alignment.CenterHorizontally,
                     ) {
-                        Text(
-                            errorText,
-                            color = MaterialTheme.colorScheme.error,
-                            style = MaterialTheme.typography.bodyMedium,
-                        )
+                        Text(errorText, color = MaterialTheme.colorScheme.error)
                         Spacer(Modifier.height(16.dp))
                         Button(onClick = onRefresh) { Text("Retry") }
                     }
                 }
                 else -> {
                     LazyColumn(modifier = Modifier.fillMaxSize()) {
-                        items(devices) { d -> DeviceRow(d, onClick = { onSelectDevice(d) }) }
+                        items(devices, key = { it.device_sn }) { d ->
+                            DeviceRow(d, onClick = { onSelectDevice(d) })
+                        }
                     }
                 }
             }
+
+            PullToRefreshContainer(
+                state = refreshState,
+                modifier = Modifier.align(Alignment.TopCenter),
+            )
         }
     }
 }
