@@ -38,11 +38,15 @@ fun CameraListScreen(
     onRequestRename: (Device) -> Unit,
 ) {
     val refreshState = rememberPullToRefreshState()
-    if (refreshState.isRefreshing) {
-        LaunchedEffect(Unit) { onRefresh() }
+    // Only kick onRefresh when the user actually pulled — don't fire on initial composition.
+    LaunchedEffect(refreshState.isRefreshing) {
+        if (refreshState.isRefreshing) onRefresh()
     }
-    LaunchedEffect(isLoading) {
-        if (!isLoading) refreshState.endRefresh()
+    // Only end the refresh spinner when the load is done AND a refresh was active —
+    // otherwise we'd call endRefresh on initial composition and leave the indicator
+    // in a half-retracted "gray circle" state next time it actually fires.
+    LaunchedEffect(isLoading, refreshState.isRefreshing) {
+        if (!isLoading && refreshState.isRefreshing) refreshState.endRefresh()
     }
 
     val selected = devices.firstOrNull { it.device_sn == selectedDeviceSn }

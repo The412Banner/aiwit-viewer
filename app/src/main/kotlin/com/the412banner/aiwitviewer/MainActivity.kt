@@ -23,7 +23,6 @@ import com.the412banner.aiwitviewer.data.Recording
 import com.the412banner.aiwitviewer.ui.CameraListScreen
 import com.the412banner.aiwitviewer.ui.ClipsScreen
 import com.the412banner.aiwitviewer.ui.LoginScreen
-import com.the412banner.aiwitviewer.ui.PlayerScreen
 import com.the412banner.aiwitviewer.ui.RenameDialog
 import com.the412banner.aiwitviewer.ui.epochMillisToYyyymmdd
 import kotlinx.coroutines.launch
@@ -33,7 +32,6 @@ sealed interface Screen {
     data object Login : Screen
     data object Cameras : Screen
     data class Clips(val device: Device) : Screen
-    data class Player(val clip: Recording, val device: Device) : Screen
 }
 
 class MainActivity : ComponentActivity() {
@@ -84,9 +82,11 @@ class MainActivity : ComponentActivity() {
         var clipsError by remember { mutableStateOf<String?>(null) }
         var selectedDateMillis by remember { mutableLongStateOf(System.currentTimeMillis()) }
 
-        // Auto-login on first composition if creds saved
-        LaunchedEffect(Unit) {
-            if (screen == Screen.Cameras && client.currentSession() == null) {
+        // Auto-load camera list whenever we land on the Cameras screen with an empty list.
+        // Covers both fresh-app-start-with-saved-creds AND the first transition after
+        // a fresh login (the previous LaunchedEffect(Unit) only fired once).
+        LaunchedEffect(screen) {
+            if (screen == Screen.Cameras && devices.isEmpty() && !devicesLoading) {
                 refreshDevices(
                     onStart = { devicesLoading = true; devicesError = null },
                     onResult = { result, err ->
@@ -111,6 +111,7 @@ class MainActivity : ComponentActivity() {
                             creds.email = email
                             creds.password = password
                             screen = Screen.Cameras
+                            // LaunchedEffect(screen) will pick up the device fetch.
                         } catch (e: Exception) {
                             loginError = e.message ?: "Login failed"
                         } finally {
@@ -121,8 +122,7 @@ class MainActivity : ComponentActivity() {
             )
 
             Screen.Cameras -> {
-                // Read aliasRevision so re-composition observes rename writes.
-                aliasRevision
+                aliasRevision  // observe so rename writes recompose the list
                 CameraListScreen(
                     devices = devices,
                     selectedDeviceSn = selectedDeviceSn,
@@ -175,7 +175,6 @@ class MainActivity : ComponentActivity() {
                         onDismiss = { renameTarget = null },
                         onConfirm = { newName ->
                             val typed = newName.trim()
-                            // Empty input → clear the alias and fall back to vendor name
                             val alias = typed.takeIf { it.isNotBlank() && it != target.name }
                             aliases.setAlias(target.device_sn, alias)
                             aliasRevision++
@@ -192,6 +191,8 @@ class MainActivity : ComponentActivity() {
                 selectedDateEpochMillis = selectedDateMillis,
                 isLoading = clipsLoading,
                 errorText = clipsError,
+                cacheDirPath = cacheDir.absolutePath,
+                signedUrlProvider = { rec -> client.signedDownloadUrl(rec, expiresIn = 600) },
                 onBack = { screen = Screen.Cameras },
                 onRefresh = {
                     refreshClips(
@@ -214,19 +215,7 @@ class MainActivity : ComponentActivity() {
                         },
                     )
                 },
-                onSelectClip = { clip ->
-                    screen = Screen.Player(clip, s.device)
-                },
-                onDownloadClip = { clip ->
-                    enqueueDownload(clip)
-                },
-            )
-
-            is Screen.Player -> PlayerScreen(
-                clip = s.clip,
-                cacheDirPath = cacheDir.absolutePath,
-                signedUrlProvider = { rec -> client.signedDownloadUrl(rec, expiresIn = 600) },
-                onBack = { screen = Screen.Clips(s.device) },
+                onDownloadClip = { clip -> enqueueDownload(clip) },
             )
         }
     }

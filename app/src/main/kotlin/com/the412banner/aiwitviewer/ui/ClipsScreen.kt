@@ -14,6 +14,7 @@ import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.unit.dp
 import com.the412banner.aiwitviewer.data.Recording
@@ -32,10 +33,11 @@ fun ClipsScreen(
     selectedDateEpochMillis: Long,
     isLoading: Boolean,
     errorText: String?,
+    cacheDirPath: String,
+    signedUrlProvider: suspend (Recording) -> String,
     onBack: () -> Unit,
     onRefresh: () -> Unit,
     onPickDate: (epochMillis: Long) -> Unit,
-    onSelectClip: (Recording) -> Unit,
     onDownloadClip: (Recording) -> Unit,
 ) {
     val dayLabel = remember(selectedDateEpochMillis) {
@@ -45,14 +47,14 @@ fun ClipsScreen(
     }
 
     var showDatePicker by remember { mutableStateOf(false) }
+    var playingClip by remember(deviceName) { mutableStateOf<Recording?>(null) }
+
     val refreshState = rememberPullToRefreshState()
-    if (refreshState.isRefreshing) {
-        LaunchedEffect(Unit) {
-            onRefresh()
-        }
+    LaunchedEffect(refreshState.isRefreshing) {
+        if (refreshState.isRefreshing) onRefresh()
     }
-    LaunchedEffect(isLoading) {
-        if (!isLoading) refreshState.endRefresh()
+    LaunchedEffect(isLoading, refreshState.isRefreshing) {
+        if (!isLoading && refreshState.isRefreshing) refreshState.endRefresh()
     }
 
     Scaffold(
@@ -77,58 +79,73 @@ fun ClipsScreen(
             )
         },
     ) { padding ->
-        Box(
-            Modifier
-                .padding(padding)
-                .fillMaxSize()
-                .nestedScroll(refreshState.nestedScrollConnection),
-        ) {
-            when {
-                isLoading && clips.isEmpty() -> {
-                    Column(
-                        Modifier.fillMaxSize(),
-                        verticalArrangement = Arrangement.Center,
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                    ) {
-                        CircularProgressIndicator()
-                    }
-                }
-                errorText != null && clips.isEmpty() -> {
-                    Column(
-                        Modifier.padding(24.dp).fillMaxSize(),
-                        verticalArrangement = Arrangement.Center,
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                    ) {
-                        Text(errorText, color = MaterialTheme.colorScheme.error)
-                        Spacer(Modifier.height(16.dp))
-                        Button(onClick = onRefresh) { Text("Retry") }
-                    }
-                }
-                clips.isEmpty() -> {
-                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        Text("No clips on $dayLabel.")
-                    }
-                }
-                else -> {
-                    LazyColumn(Modifier.fillMaxSize()) {
-                        item {
-                            LivePipBanner(
-                                deviceName = deviceName,
-                                isOnline = isDeviceOnline,
-                                modifier = Modifier.padding(12.dp),
-                            )
-                        }
-                        items(clips, key = { it.fileName }) { c ->
-                            ClipRow(c, onClick = { onSelectClip(c) }, onDownload = { onDownloadClip(c) })
-                        }
-                    }
+        Column(modifier = Modifier.padding(padding).fillMaxSize()) {
+            // Sticky top area: live placeholder by default, inline clip player when a clip is tapped.
+            Box(modifier = Modifier.padding(12.dp)) {
+                val clip = playingClip
+                if (clip == null) {
+                    LivePipBanner(deviceName = deviceName, isOnline = isDeviceOnline)
+                } else {
+                    ClipPlayerSurface(
+                        clip = clip,
+                        cacheDirPath = cacheDirPath,
+                        signedUrlProvider = signedUrlProvider,
+                        onClose = { playingClip = null },
+                    )
                 }
             }
+            HorizontalDivider()
 
-            PullToRefreshContainer(
-                state = refreshState,
-                modifier = Modifier.align(Alignment.TopCenter),
-            )
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .nestedScroll(refreshState.nestedScrollConnection),
+            ) {
+                when {
+                    isLoading && clips.isEmpty() -> {
+                        Column(
+                            Modifier.fillMaxSize(),
+                            verticalArrangement = Arrangement.Center,
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                        ) {
+                            CircularProgressIndicator()
+                        }
+                    }
+                    errorText != null && clips.isEmpty() -> {
+                        Column(
+                            Modifier.padding(24.dp).fillMaxSize(),
+                            verticalArrangement = Arrangement.Center,
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                        ) {
+                            Text(errorText, color = MaterialTheme.colorScheme.error)
+                            Spacer(Modifier.height(16.dp))
+                            Button(onClick = onRefresh) { Text("Retry") }
+                        }
+                    }
+                    clips.isEmpty() -> {
+                        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            Text("No clips on $dayLabel.")
+                        }
+                    }
+                    else -> {
+                        LazyColumn(Modifier.fillMaxSize()) {
+                            items(clips, key = { it.fileName }) { c ->
+                                ClipRow(
+                                    c = c,
+                                    isSelected = c.fileName == playingClip?.fileName,
+                                    onClick = { playingClip = c },
+                                    onDownload = { onDownloadClip(c) },
+                                )
+                            }
+                        }
+                    }
+                }
+
+                PullToRefreshContainer(
+                    state = refreshState,
+                    modifier = Modifier.align(Alignment.TopCenter),
+                )
+            }
         }
     }
 
@@ -152,9 +169,20 @@ fun ClipsScreen(
 }
 
 @Composable
-private fun ClipRow(c: Recording, onClick: () -> Unit, onDownload: () -> Unit) {
+private fun ClipRow(
+    c: Recording,
+    isSelected: Boolean,
+    onClick: () -> Unit,
+    onDownload: () -> Unit,
+) {
+    val bg = if (isSelected) {
+        MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f)
+    } else {
+        Color.Transparent
+    }
     ListItem(
         modifier = Modifier.clickable(onClick = onClick),
+        colors = ListItemDefaults.colors(containerColor = bg),
         headlineContent = { Text(c.time.ifBlank { c.fileName.substringAfterLast('/') }) },
         supportingContent = {
             val seconds = c.duration / 1000.0

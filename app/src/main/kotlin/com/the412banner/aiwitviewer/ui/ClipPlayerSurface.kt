@@ -5,14 +5,16 @@ import android.view.SurfaceHolder
 import android.view.SurfaceView
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -23,25 +25,36 @@ import java.io.FileOutputStream
 import java.net.HttpURLConnection
 import java.net.URL
 
-private const val TAG = "PlayerScreen"
+private const val TAG = "ClipPlayerSurface"
 private const val FEED_CHUNK_BYTES = 32 * 1024
 
-@OptIn(ExperimentalMaterial3Api::class)
+/**
+ * Inline clip player — the same EZCloudStoragePlayer wiring we had in the
+ * standalone PlayerScreen, but rendered as a reusable composable that can be
+ * embedded in the top of another screen (currently used above the clips list
+ * on the ClipsScreen).
+ *
+ * Lifecycle: the native player is created/torn down by a [DisposableEffect]
+ * keyed to [Recording.fileName]. Tapping a different clip swaps the player
+ * cleanly. A close button signals the caller (via [onClose]) that the user
+ * wants to dismiss the player and go back to whatever placeholder was here.
+ */
 @Composable
-fun PlayerScreen(
+fun ClipPlayerSurface(
     clip: Recording,
     cacheDirPath: String,
     signedUrlProvider: suspend (Recording) -> String,
-    onBack: () -> Unit,
+    onClose: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     val player = remember { mutableStateOf<EZCloudStoragePlayer?>(null) }
-    var isPaused by remember { mutableStateOf(false) }
-    var statusText by remember { mutableStateOf("Preparing…") }
-    var errorText by remember { mutableStateOf<String?>(null) }
-    var downloadProgress by remember { mutableFloatStateOf(0f) }
-    var bufferProgress by remember { mutableFloatStateOf(0f) }
-    var videoWidth by remember { mutableIntStateOf(0) }
-    var videoHeight by remember { mutableIntStateOf(0) }
+    var isPaused by remember(clip.fileName) { mutableStateOf(false) }
+    var statusText by remember(clip.fileName) { mutableStateOf("Preparing…") }
+    var errorText by remember(clip.fileName) { mutableStateOf<String?>(null) }
+    var downloadProgress by remember(clip.fileName) { mutableFloatStateOf(0f) }
+    var bufferProgress by remember(clip.fileName) { mutableFloatStateOf(0f) }
+    var videoWidth by remember(clip.fileName) { mutableIntStateOf(0) }
+    var videoHeight by remember(clip.fileName) { mutableIntStateOf(0) }
     val scope = rememberCoroutineScope()
 
     DisposableEffect(clip.fileName) {
@@ -61,98 +74,50 @@ fun PlayerScreen(
                 errorText = "$code: ${message ?: "(no message)"}"
                 Log.e(TAG, "player error $code: $message")
             }
-            override fun onPCMCallback(pcm: ByteArray?, len: Int, ts: Float) { /* audio handled internally */ }
-            override fun onPCMParamCallback(sampleRate: Int, channels: Int, bitsPerSample: Int) {
-                Log.d(TAG, "PCM params: $sampleRate Hz, $channels ch, $bitsPerSample bps")
-            }
+            override fun onPCMCallback(pcm: ByteArray?, len: Int, ts: Float) {}
+            override fun onPCMParamCallback(sampleRate: Int, channels: Int, bitsPerSample: Int) {}
             override fun onPerpare() { statusText = "Buffering…" }
-            override fun onPlaying(position: Float) { /* per-frame; ignore */ }
-            override fun onRenderNNInfo(info: String?) { /* AI overlay; ignore */ }
+            override fun onPlaying(position: Float) {}
+            override fun onRenderNNInfo(info: String?) {}
             override fun onStart() { statusText = "Playing" }
             override fun onStop() { statusText = "Stopped" }
         })
-
         player.value = p
+
         onDispose {
             try { p.stop() } catch (e: Throwable) { Log.w(TAG, "stop", e) }
             try { p.release() } catch (e: Throwable) { Log.w(TAG, "release", e) }
         }
     }
 
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = { Text(clip.fileName.substringAfterLast('/')) },
-                navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
-                    }
-                },
-            )
-        },
-        bottomBar = {
-            BottomAppBar {
-                IconButton(onClick = {
-                    val p = player.value ?: return@IconButton
-                    isPaused = !isPaused
-                    p.pause(isPaused)
-                }) {
-                    Icon(
-                        if (isPaused) Icons.Filled.PlayArrow else Icons.Filled.Pause,
-                        contentDescription = if (isPaused) "Resume" else "Pause",
-                    )
-                }
-                Spacer(Modifier.width(8.dp))
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(statusText, style = MaterialTheme.typography.bodyMedium)
-                    val dlVisible = downloadProgress > 0f && downloadProgress < 1f
-                    val bufVisible = bufferProgress > 0f && bufferProgress < 1f
-                    if (dlVisible || bufVisible) {
-                        LinearProgressIndicator(
-                            progress = { if (dlVisible) downloadProgress else bufferProgress },
-                            modifier = Modifier.fillMaxWidth(),
-                        )
-                    }
-                }
-            }
-        },
-    ) { padding ->
+    val videoAspect = if (videoWidth > 0 && videoHeight > 0) {
+        videoWidth.toFloat() / videoHeight.toFloat()
+    } else {
+        16f / 9f
+    }
+
+    Column(modifier = modifier) {
         Box(
             modifier = Modifier
-                .padding(padding)
-                .fillMaxSize()
+                .fillMaxWidth()
+                .aspectRatio(videoAspect)
+                .clip(RoundedCornerShape(8.dp))
                 .background(Color.Black),
             contentAlignment = Alignment.Center,
         ) {
             if (errorText != null) {
                 Text("Error: $errorText", color = MaterialTheme.colorScheme.error)
             } else {
-                // Use the lib's reported width/height from onCheckoutInfo so the
-                // surface matches the recording's native aspect ratio rather than
-                // stretching to the screen. Doorbells are usually 16:9 but Front
-                // Door / older firmware ship 4:3, so we can't hardcode.
-                val videoAspect = if (videoWidth > 0 && videoHeight > 0) {
-                    videoWidth.toFloat() / videoHeight.toFloat()
-                } else {
-                    16f / 9f
-                }
                 AndroidView(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .aspectRatio(videoAspect),
+                    modifier = Modifier.fillMaxSize(),
                     factory = { ctx ->
                         SurfaceView(ctx).also { sv ->
                             sv.holder.addCallback(object : SurfaceHolder.Callback {
                                 private var feedJob: Job? = null
-
                                 override fun surfaceCreated(holder: SurfaceHolder) {
                                     val p = player.value ?: return
                                     p.setSurface(holder.surface)
                                     p.play(clip.endpoint, clip.bucket, clip.fileName)
-                                    // Feed bytes into the player. The native lib logs
-                                    // "JAVA TO DOWNLOAD" as its sentinel: it doesn't
-                                    // network-fetch on its own; we stream the OSS object
-                                    // into it via readData() — the same way AIWIT does.
                                     feedJob = scope.launch(Dispatchers.IO) {
                                         feedClipIntoPlayer(
                                             clip = clip,
@@ -173,6 +138,50 @@ fun PlayerScreen(
                         }
                     },
                 )
+            }
+
+            // Close button overlay (top-right)
+            IconButton(
+                onClick = onClose,
+                modifier = Modifier.align(Alignment.TopEnd).padding(4.dp),
+            ) {
+                Icon(
+                    Icons.Filled.Close,
+                    contentDescription = "Close player",
+                    tint = Color.White.copy(alpha = 0.85f),
+                )
+            }
+        }
+
+        // Slim status row under the surface — keeps the inline footprint small.
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            IconButton(
+                onClick = {
+                    val p = player.value ?: return@IconButton
+                    isPaused = !isPaused
+                    p.pause(isPaused)
+                },
+                modifier = Modifier.size(32.dp),
+            ) {
+                Icon(
+                    if (isPaused) Icons.Filled.PlayArrow else Icons.Filled.Pause,
+                    contentDescription = if (isPaused) "Resume" else "Pause",
+                )
+            }
+            Spacer(Modifier.width(8.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(statusText, style = MaterialTheme.typography.bodySmall)
+                val dlVisible = downloadProgress > 0f && downloadProgress < 1f
+                val bufVisible = bufferProgress > 0f && bufferProgress < 1f
+                if (dlVisible || bufVisible) {
+                    LinearProgressIndicator(
+                        progress = { if (dlVisible) downloadProgress else bufferProgress },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
             }
         }
     }
