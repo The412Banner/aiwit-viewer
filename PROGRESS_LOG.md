@@ -130,3 +130,42 @@ the next step is `strace`-style hooking on the .so's network calls
   labeled "(implemented once P2P RE lands)". Real live stream is blocked
   on Task #10 (libNatType.so RE).
 
+---
+
+## 2026-05-25 — Session 1.7: pre-live-view foundation (commits `c4d9194` … `cea4c3b`)
+
+### What landed
+- 7 more native libs bundled (libVCTP2P, libNatType, libEZAEC, libg711a_jni,
+  libnms, libaes3, libwebrtc_audio_preprocessing, libEZMediaUtils) — 8.9 MB total.
+- Java wrappers copied verbatim with matching packages so JNI symbols bind:
+  EZMediaUtils, P2PSession, Nat, G711ACodec, RectInfo.
+- AIWIT internal protocol code copied: n1.a (1310 lines, EZJetterBuffer
+  / jitter buffer), n1.b (FrameData), n1.c (RTPData / packet parser);
+  plus stubs for u1.t (logger), u1.o (4 helper methods only), e1.a
+  (build flag).
+- Patched mbridge SDK constants inline (MBridgeConstans.ENDCARD_URL_TYPE_PL,
+  ExtractorMediaSource.DEFAULT_LOADING_CHECK_INTERVAL_BYTES).
+- Added Guava dep (Ascii.DEL + UnsignedBytes used by n1.*).
+- CloudMessagingClient — minimal Kotlin TLS client that dials the same
+  relay AIWIT's m1.f uses (47.107.28.145:9003, trust-all SSL); reads with
+  m1.f.L()'s }{ split logic; sends a best-guess login JSON + 30s heartbeats.
+  Wired into MainActivity post-login; logs to tag "CloudMsg".
+
+### Open questions for next session
+- Does the server accept plain JSON, or is it always on m1.f's encrypted
+  path (M() / x1.a)? Need to inspect logcat after a fresh install to see
+  what the server replies (banner, error, silence, close).
+- If encrypted path mandatory: port x1.a's framing + AES (and discover
+  where DoorbellApplication.f13736j1 / f13740k1 keys come from — likely
+  from the REST login response or a derivation we haven't traced).
+- What's the wake-camera command shape? Probably JSON with cmd:"preview-start"
+  or similar, plus the device's SN. Need a captured exchange from AIWIT
+  itself to be sure.
+
+### What's NOT in this commit set
+- No UI for live view yet — banner above the clips list and camera list
+  remains "live preview pending" placeholder.
+- No frame rendering pipeline yet (n1.* code is dead until we have bytes
+  to feed it from P2PSession).
+- Two-way audio (EZAECSpeaker) not wired.
+
