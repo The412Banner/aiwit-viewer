@@ -17,9 +17,29 @@ android {
         ndk { abiFilters += listOf("arm64-v8a") }
     }
 
+    signingConfigs {
+        // Stable debug key committed to the repo. Without this, every CI run
+        // generates a fresh ~/.android/debug.keystore and the resulting APK is
+        // unable to upgrade in place over the previous CI build — Android
+        // refuses to install an update with a different signing certificate.
+        getByName("debug") {
+            storeFile = file("debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
+    }
+
     buildTypes {
+        debug {
+            signingConfig = signingConfigs.getByName("debug")
+        }
         release {
             isMinifyEnabled = false
+            // Until a real release key lands, sign release with the same debug key
+            // so artifacts still install. Replace with a proper release signingConfig
+            // before publishing to a real release channel.
+            signingConfig = signingConfigs.getByName("debug")
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
     }
