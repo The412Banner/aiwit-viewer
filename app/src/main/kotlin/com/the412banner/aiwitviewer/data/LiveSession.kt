@@ -30,6 +30,8 @@ class LiveSession(private val context: Context) {
     companion object { private const val TAG = "LiveSession" }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private class RxStats(var rxBytes: Int = 0, var rxTotal: Long = 0, var parseOk: Int = 0, var parseNull: Int = 0)
+    private val rxStats = mutableMapOf<String, RxStats>()
     private val pkByDevice = mutableMapOf<String, String>()
     private val sessionByDevice = mutableMapOf<String, n1.a>()
     private val pollerJobs = mutableMapOf<String, Job>()
@@ -79,16 +81,26 @@ class LiveSession(private val context: Context) {
             @Throws(JSONException::class, IOException::class)
             override fun p2pReceiveDataCall(sn: String?, bytes: ByteArray?, len: Int) {
                 if (sn == null || bytes == null) return
+                // Granular diagnostics — counters per camera, logged every 50 callbacks.
+                val stats = rxStats.getOrPut(sn) { RxStats() }
+                stats.rxBytes++
+                stats.rxTotal += len
                 val pk = pkByDevice[sn]
                 val frame = try {
                     n1.c.k(bytes, pk)
                 } catch (t: Throwable) {
                     Log.w(TAG, "n1.c.k threw", t); return
-                } ?: return
-                val buf = sessionByDevice.getOrPut(sn) { n1.a() }
-                buf.f(frame)
-                // d() poll happens in a per-device coroutine; only need to mark
-                // that data is flowing here for diagnostics
+                }
+                if (frame == null) {
+                    stats.parseNull++
+                } else {
+                    stats.parseOk++
+                    val buf = sessionByDevice.getOrPut(sn) { n1.a() }
+                    buf.f(frame)
+                }
+                if (stats.rxBytes % 50 == 0) {
+                    Log.i(TAG, "RX $sn: ${stats.rxBytes} cbs, ${stats.rxTotal} bytes, parsed=${stats.parseOk}, null=${stats.parseNull}, pk-set=${pk != null}")
+                }
             }
         }
         listener = cb
@@ -128,13 +140,22 @@ class LiveSession(private val context: Context) {
     private suspend fun pollFramesLoop(deviceSn: String) {
         Log.i(TAG, "pollFramesLoop start for $deviceSn")
         val buffer = sessionByDevice[deviceSn] ?: return
+        var framesPolled = 0
         var framesDecoded = 0
+        var decodeNulls = 0
         var lastLogAt = System.currentTimeMillis()
         while (currentCoroutineContext().isActive) {
             val item: n1.b? = buffer.d()
             if (item == null) {
-                delay(15); continue
+                delay(15)
+                val now = System.currentTimeMillis()
+                if (now - lastLogAt > 2000) {
+                    Log.i(TAG, "$deviceSn polled=$framesPolled decoded=$framesDecoded decode-null=$decodeNulls (empty d() this tick)")
+                    lastLogAt = now
+                }
+                continue
             }
+            framesPolled++
             val byteBuffer = try { item.b() } catch (t: Throwable) { Log.w(TAG, "item.b() threw", t); null }
             if (byteBuffer == null) continue
             val payload = ByteArray(byteBuffer.remaining()).also { byteBuffer.get(it) }
@@ -147,10 +168,12 @@ class LiveSession(private val context: Context) {
                 framesDecoded++
                 val flow = frameFlows.getOrPut(deviceSn) { MutableStateFlow<Bitmap?>(null) }
                 flow.value = bmp
+            } else {
+                decodeNulls++
             }
             val now = System.currentTimeMillis()
             if (now - lastLogAt > 2000) {
-                Log.i(TAG, "$deviceSn frames=$framesDecoded")
+                Log.i(TAG, "$deviceSn polled=$framesPolled decoded=$framesDecoded decode-null=$decodeNulls")
                 lastLogAt = now
             }
         }
