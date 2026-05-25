@@ -77,17 +77,25 @@ fun LivePipBanner(
         return
     }
     LivePipBannerLayout(modifier = modifier) {
+        // Always show the "we're trying" indication when a camera is selected —
+        // even if the device state still reports asleep. Physical wakeup happens
+        // before the cloud catches up.
         Icon(
-            imageVector = if (isOnline) Icons.Filled.Videocam else Icons.Filled.VideocamOff,
+            imageVector = Icons.Filled.Videocam,
             contentDescription = null,
-            tint = if (isOnline) Color(0xFF4CAF50) else Color(0xFF555555),
+            tint = Color(0xFFFFA000), // amber = "working on it"
             modifier = Modifier.size(48.dp),
         )
         Spacer(Modifier.height(8.dp))
         Text(
-            if (isOnline) "$deviceName • connecting…" else "$deviceName • offline",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+            "$deviceName • waking up…",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurface,
+        )
+        Text(
+            if (isOnline) "camera online, negotiating stream" else "camera asleep in cloud state",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
         )
     }
 }

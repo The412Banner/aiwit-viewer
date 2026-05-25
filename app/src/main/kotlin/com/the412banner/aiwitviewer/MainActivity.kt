@@ -187,6 +187,18 @@ class MainActivity : ComponentActivity() {
                                 kotlinx.coroutines.delay(1500)
                                 messaging.sendPreviewStart(sn, d.device_sn)
                             }
+                            // Refresh the device list every 3s for the next 30s so
+                            // the row state catches up to physical state (asleep → online).
+                            lifecycleScope.launch {
+                                repeat(10) {
+                                    kotlinx.coroutines.delay(3000)
+                                    if (selectedDeviceSn != d.device_sn) return@launch
+                                    try {
+                                        val updated = client.listDevices()
+                                        devices = updated
+                                    } catch (_: Exception) {}
+                                }
+                            }
                         }
                     },
                     onOpenClips = { d ->
