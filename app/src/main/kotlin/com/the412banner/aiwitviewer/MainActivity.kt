@@ -22,6 +22,7 @@ import com.the412banner.aiwitviewer.data.Device
 import com.the412banner.aiwitviewer.data.LiveSession
 import com.the412banner.aiwitviewer.data.LocalAliasStore
 import com.the412banner.aiwitviewer.data.Recording
+import com.the412banner.aiwitviewer.ui.CameraDetailScreen
 import com.the412banner.aiwitviewer.ui.CameraListScreen
 import com.the412banner.aiwitviewer.ui.ClipsScreen
 import com.the412banner.aiwitviewer.ui.LoginScreen
@@ -33,6 +34,7 @@ import java.util.UUID
 sealed interface Screen {
     data object Login : Screen
     data object Cameras : Screen
+    data class CameraDetail(val device: Device) : Screen
     data class Clips(val device: Device) : Screen
 }
 
@@ -181,30 +183,25 @@ class MainActivity : ComponentActivity() {
                         screen = Screen.Login
                     },
                     onSelectDevice = { d ->
+                        // Single tap → open the full-screen camera detail page (AIWIT-style).
                         selectedDeviceSn = d.device_sn
+                        screen = Screen.CameraDetail(d)
+                        // Also kick the wakeup flow so live preview has a chance to
+                        // come up by the time the user looks at the detail screen.
                         val sn = creds.appSn
                         val em = creds.email
                         if (sn != null && em != null) {
-                            // AIWIT's MITM-captured live-view flow:
-                            //   wakeup -> wakeup-reply (carries pk) -> devices-state ->
-                            //   wakeup again (retry) -> server pushes preview-start
-                            //   notification -> ping every 10s keepalive.
-                            // No preview-start cmd. No stream-start cmd.
                             messaging.sendWakeup(sn, d.device_sn)
                             lifecycleScope.launch {
                                 kotlinx.coroutines.delay(1500)
                                 messaging.sendDevicesState(sn)
                                 kotlinx.coroutines.delay(1500)
-                                messaging.sendWakeup(sn, d.device_sn)  // AIWIT retries the wakeup
-                                // Start the ping keepalive — every 10s while this
-                                // camera is selected. Cancels when selection changes.
+                                messaging.sendWakeup(sn, d.device_sn)
                                 while (selectedDeviceSn == d.device_sn) {
                                     messaging.sendPing(sn, d.device_sn, em)
                                     kotlinx.coroutines.delay(10_000)
                                 }
                             }
-                            // Refresh the device list every 3s for the next 30s so
-                            // the row state catches up to physical state (asleep → online).
                             lifecycleScope.launch {
                                 repeat(10) {
                                     kotlinx.coroutines.delay(3000)
@@ -248,21 +245,35 @@ class MainActivity : ComponentActivity() {
                     onRequestRename = { d -> renameTarget = d },
                     liveFrameFlow = { sn -> live.frames(sn) },
                 )
+            }
 
-                renameTarget?.let { target ->
-                    RenameDialog(
-                        initialName = aliases.displayName(target),
-                        onDismiss = { renameTarget = null },
-                        onConfirm = { newName ->
-                            val typed = newName.trim()
-                            val alias = typed.takeIf { it.isNotBlank() && it != target.name }
-                            aliases.setAlias(target.device_sn, alias)
-                            aliasRevision++
-                            renameTarget = null
+            is Screen.CameraDetail -> CameraDetailScreen(
+                device = s.device,
+                displayName = aliases.displayName(s.device),
+                liveFrame = live.frames(s.device.device_sn),
+                onBack = { screen = Screen.Cameras },
+                onOpenClips = {
+                    selectedDateMillis = System.currentTimeMillis()
+                    refreshClips(
+                        device = s.device,
+                        yyyymmdd = epochMillisToYyyymmdd(selectedDateMillis),
+                        onStart = { clipsLoading = true; clipsError = null; clips = emptyList() },
+                        onResult = { result, err ->
+                            clipsLoading = false
+                            if (err == null) clips = result else clipsError = err
                         },
                     )
-                }
-            }
+                    screen = Screen.Clips(s.device)
+                },
+                onSnapshot = {
+                    Toast.makeText(
+                        this@MainActivity,
+                        "Snapshot will work once live view is wired up (Phase 5c).",
+                        Toast.LENGTH_SHORT,
+                    ).show()
+                },
+                onRequestRename = { renameTarget = s.device },
+            )
 
             is Screen.Clips -> ClipsScreen(
                 deviceName = aliases.displayName(s.device),
@@ -296,6 +307,22 @@ class MainActivity : ComponentActivity() {
                     )
                 },
                 onDownloadClip = { clip -> enqueueDownload(clip) },
+            )
+        }
+
+        // Rename dialog — shown from either the Cameras screen's long-press
+        // menu or the CameraDetail screen's "Rename (local)" button.
+        renameTarget?.let { target ->
+            RenameDialog(
+                initialName = aliases.displayName(target),
+                onDismiss = { renameTarget = null },
+                onConfirm = { newName ->
+                    val typed = newName.trim()
+                    val alias = typed.takeIf { it.isNotBlank() && it != target.name }
+                    aliases.setAlias(target.device_sn, alias)
+                    aliasRevision++
+                    renameTarget = null
+                },
             )
         }
     }
