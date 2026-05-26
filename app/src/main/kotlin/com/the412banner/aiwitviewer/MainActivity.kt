@@ -59,8 +59,13 @@ class MainActivity : ComponentActivity() {
         messaging.setOnMessage { obj ->
             val cmd = obj.optString("cmd")
             android.util.Log.i("CloudMsg", "parsed-msg cmd=$cmd keys=${obj.keys().asSequence().toList()}")
-            // Route preview-start replies into the live session
-            if (cmd == "preview-start" && obj.optInt("err_no", -1) == 0) {
+            // The server hands us session params via TWO different messages:
+            //   - The reply to our own `wakeup` cmd (cmd="wakeup", err_no=0, pk, ip, ports)
+            //   - An unsolicited `preview-start` notification (cmd="preview-start",
+            //     msg_type="notification", state=1, same pk + ports)
+            // Either is fine — both carry the same per-session pk. Use whichever
+            // arrives first.
+            if ((cmd == "preview-start" || cmd == "wakeup") && obj.optInt("err_no", -1) == 0) {
                 val peer = obj.optString("peer", "")
                 val pk = obj.optString("pk", "")
                 if (peer.isNotBlank() && pk.isNotBlank()) {
@@ -178,17 +183,25 @@ class MainActivity : ComponentActivity() {
                     onSelectDevice = { d ->
                         selectedDeviceSn = d.device_sn
                         val sn = creds.appSn
-                        if (sn != null) {
-                            // Wake-up, then stream-start (which triggers the camera
-                            // to register with the P2P relay), then preview-start
-                            // (which makes the cloud reply with the per-session pk).
-                            // The lib retries connectToPeer until the relay says OK.
+                        val em = creds.email
+                        if (sn != null && em != null) {
+                            // AIWIT's MITM-captured live-view flow:
+                            //   wakeup -> wakeup-reply (carries pk) -> devices-state ->
+                            //   wakeup again (retry) -> server pushes preview-start
+                            //   notification -> ping every 10s keepalive.
+                            // No preview-start cmd. No stream-start cmd.
                             messaging.sendWakeup(sn, d.device_sn)
                             lifecycleScope.launch {
                                 kotlinx.coroutines.delay(1500)
-                                messaging.sendStreamStart(sn, d.device_sn)
-                                kotlinx.coroutines.delay(500)
-                                messaging.sendPreviewStart(sn, d.device_sn)
+                                messaging.sendDevicesState(sn)
+                                kotlinx.coroutines.delay(1500)
+                                messaging.sendWakeup(sn, d.device_sn)  // AIWIT retries the wakeup
+                                // Start the ping keepalive — every 10s while this
+                                // camera is selected. Cancels when selection changes.
+                                while (selectedDeviceSn == d.device_sn) {
+                                    messaging.sendPing(sn, d.device_sn, em)
+                                    kotlinx.coroutines.delay(10_000)
+                                }
                             }
                             // Refresh the device list every 3s for the next 30s so
                             // the row state catches up to physical state (asleep → online).

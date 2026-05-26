@@ -55,7 +55,10 @@ class CloudMessagingClient(
         // exactly `eead%Hb27Zf$v#vG`.
         private const val CMD_SIGN_SALT = "eead%Hb27Zf\$v#vG"
         private const val APP_NAME = "aiwit"
-        private const val PLATFORM_ID = 0  // f13751n0
+        // AIWIT's MITM-captured app-login uses 1, not 0. The hardcoded
+        // default we read from DoorbellApplication.f13751n0 was the
+        // pre-init value; runtime sets it to 1 for Android elsewhere.
+        private const val PLATFORM_ID = 1
     }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -119,7 +122,7 @@ class CloudMessagingClient(
      * verbatim: cmd + udid + username + pushToken + lang + platform_id +
      * AppName + a "k" signature built as "0" + MD5(salt + udid + "app-login").
      */
-    fun sendAppLogin(appSn: String, username: String, pushToken: String = "pushToken", lang: String = "en") {
+    fun sendAppLogin(appSn: String, username: String, pushToken: String = "", lang: String = "en") {
         appSnForReconnect = appSn
         emailForReconnect = username
         val k = "0" + md5Hex("$CMD_SIGN_SALT$appSn" + "app-login")
@@ -164,9 +167,38 @@ class CloudMessagingClient(
     }
 
     /**
-     * Request a live-view session. Matches m1/a.java line 339.
-     * Server replies with `cmd:"preview-start"` carrying ip, video_port,
-     * audio_port, speak_port, pk.
+     * Per-camera "I am watching this peer" keepalive. AIWIT sends this every
+     * 10 seconds while a camera is being viewed (captured via MITM 2026-05-25).
+     * This appears to be what keeps the camera's relay session alive — without
+     * it, the relay drops the peer registration and `connect` replies with
+     * `peer not exist!`.
+     */
+    fun sendPing(appSn: String, deviceSn: String, username: String) {
+        sendJson(org.json.JSONObject().apply {
+            put("cmd", "ping")
+            put("udid", appSn)
+            put("username", username)
+            put("peer", deviceSn)
+        })
+    }
+
+    /**
+     * `devices-state` — AIWIT sends this once shortly after wakeup. Returns
+     * a full devices array. Not strictly required for live view, but matching
+     * AIWIT's flow so the cloud sees us as a real client.
+     */
+    fun sendDevicesState(appSn: String) {
+        sendJson(org.json.JSONObject().apply {
+            put("cmd", "devices-state")
+            put("udid", appSn)
+        })
+    }
+
+    /**
+     * Historical: was sending preview-start as a command. Turns out the server
+     * doesn't accept this as a request — it only emits `cmd:"preview-start"` as
+     * an unsolicited notification when the camera is fully online. Kept the
+     * method for diagnostics.
      */
     fun sendPreviewStart(appSn: String, deviceSn: String) {
         sendJson(org.json.JSONObject().apply {
