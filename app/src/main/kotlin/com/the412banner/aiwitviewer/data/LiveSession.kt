@@ -268,7 +268,12 @@ class LiveSession(private val context: Context) {
                 val isRtp = decoded[0] in 0x80.toByte()..0x83.toByte()
                 if (!isRtp) continue
                 val frame = try { n1.c.k(decoded, pk) } catch (t: Throwable) {
-                    Log.w(TAG, "n1.c.k threw on udp pkt", t); null
+                    Log.w(TAG, "n1.c.k threw on udp pkt: ${t::class.java.simpleName}: ${t.message}", t); null
+                }
+                if (rxPkts in 3..10) {
+                    val payloadLen = try { frame?.l()?.size } catch (_: Throwable) { -2 }
+                    val type = try { frame?.i() } catch (_: Throwable) { -2 }
+                    Log.i(TAG, "udp pkt#$rxPkts n1.c.k => ${if (frame == null) "NULL" else "type=$type seq=${frame.m()} payload-len=$payloadLen"}")
                 }
                 if (frame == null) {
                     rtpNull++
