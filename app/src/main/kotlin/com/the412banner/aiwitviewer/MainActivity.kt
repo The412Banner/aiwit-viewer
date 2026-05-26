@@ -179,12 +179,15 @@ class MainActivity : ComponentActivity() {
                         selectedDeviceSn = d.device_sn
                         val sn = creds.appSn
                         if (sn != null) {
-                            // Battery-powered doorbells: send wakeup first, then
-                            // preview-start ~1.5s later so the camera has a chance
-                            // to come online before the cloud relays the session.
+                            // Wake-up, then stream-start (which triggers the camera
+                            // to register with the P2P relay), then preview-start
+                            // (which makes the cloud reply with the per-session pk).
+                            // The lib retries connectToPeer until the relay says OK.
                             messaging.sendWakeup(sn, d.device_sn)
                             lifecycleScope.launch {
                                 kotlinx.coroutines.delay(1500)
+                                messaging.sendStreamStart(sn, d.device_sn)
+                                kotlinx.coroutines.delay(500)
                                 messaging.sendPreviewStart(sn, d.device_sn)
                             }
                             // Refresh the device list every 3s for the next 30s so

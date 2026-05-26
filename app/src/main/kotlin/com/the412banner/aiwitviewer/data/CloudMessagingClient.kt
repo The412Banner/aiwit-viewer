@@ -176,6 +176,29 @@ class CloudMessagingClient(
         })
     }
 
+    /**
+     * Tell the camera to start streaming. Matches m1/a.java line 49 (`C(str)`).
+     * Likely what triggers the camera to register itself with the P2P relay.
+     */
+    fun sendStreamStart(appSn: String, deviceSn: String) {
+        sendJson(org.json.JSONObject().apply {
+            put("cmd", "stream-start")
+            put("udid", appSn)
+            put("peer", deviceSn)
+        })
+    }
+
+    /**
+     * Tell the camera to stop streaming. Matches m1/a.java line 63 (`D(str)`).
+     */
+    fun sendStreamStop(appSn: String, deviceSn: String) {
+        sendJson(org.json.JSONObject().apply {
+            put("cmd", "stream-stop")
+            put("udid", appSn)
+            put("peer", deviceSn)
+        })
+    }
+
     private fun md5Hex(s: String): String {
         val bytes = java.security.MessageDigest.getInstance("MD5").digest(s.toByteArray())
         return bytes.joinToString("") { "%02x".format(it) }
