@@ -183,36 +183,9 @@ class MainActivity : ComponentActivity() {
                         screen = Screen.Login
                     },
                     onSelectDevice = { d ->
-                        // Single tap → open the full-screen camera detail page (AIWIT-style).
                         selectedDeviceSn = d.device_sn
                         screen = Screen.CameraDetail(d)
-                        // Also kick the wakeup flow so live preview has a chance to
-                        // come up by the time the user looks at the detail screen.
-                        val sn = creds.appSn
-                        val em = creds.email
-                        if (sn != null && em != null) {
-                            messaging.sendWakeup(sn, d.device_sn)
-                            lifecycleScope.launch {
-                                kotlinx.coroutines.delay(1500)
-                                messaging.sendDevicesState(sn)
-                                kotlinx.coroutines.delay(1500)
-                                messaging.sendWakeup(sn, d.device_sn)
-                                while (selectedDeviceSn == d.device_sn) {
-                                    messaging.sendPing(sn, d.device_sn, em)
-                                    kotlinx.coroutines.delay(10_000)
-                                }
-                            }
-                            lifecycleScope.launch {
-                                repeat(10) {
-                                    kotlinx.coroutines.delay(3000)
-                                    if (selectedDeviceSn != d.device_sn) return@launch
-                                    try {
-                                        val updated = client.listDevices()
-                                        devices = updated
-                                    } catch (_: Exception) {}
-                                }
-                            }
-                        }
+                        startLiveViewFlow(d)
                     },
                     onOpenClips = { d ->
                         selectedDeviceSn = d.device_sn
@@ -247,33 +220,40 @@ class MainActivity : ComponentActivity() {
                 )
             }
 
-            is Screen.CameraDetail -> CameraDetailScreen(
-                device = s.device,
-                displayName = aliases.displayName(s.device),
-                liveFrame = live.frames(s.device.device_sn),
-                onBack = { screen = Screen.Cameras },
-                onOpenClips = {
-                    selectedDateMillis = System.currentTimeMillis()
-                    refreshClips(
-                        device = s.device,
-                        yyyymmdd = epochMillisToYyyymmdd(selectedDateMillis),
-                        onStart = { clipsLoading = true; clipsError = null; clips = emptyList() },
-                        onResult = { result, err ->
-                            clipsLoading = false
-                            if (err == null) clips = result else clipsError = err
-                        },
-                    )
-                    screen = Screen.Clips(s.device)
-                },
-                onSnapshot = {
-                    Toast.makeText(
-                        this@MainActivity,
-                        "Snapshot will work once live view is wired up (Phase 5c).",
-                        Toast.LENGTH_SHORT,
-                    ).show()
-                },
-                onRequestRename = { renameTarget = s.device },
-            )
+            is Screen.CameraDetail -> {
+                // Use the latest device from `devices` so state updates flow through.
+                val current = devices.firstOrNull { it.device_sn == s.device.device_sn } ?: s.device
+                CameraDetailScreen(
+                    device = current,
+                    displayName = aliases.displayName(current),
+                    liveFrame = live.frames(current.device_sn),
+                    onBack = { screen = Screen.Cameras },
+                    onOpenClips = {
+                        selectedDateMillis = System.currentTimeMillis()
+                        refreshClips(
+                            device = current,
+                            yyyymmdd = epochMillisToYyyymmdd(selectedDateMillis),
+                            onStart = { clipsLoading = true; clipsError = null; clips = emptyList() },
+                            onResult = { result, err ->
+                                clipsLoading = false
+                                if (err == null) clips = result else clipsError = err
+                            },
+                        )
+                        screen = Screen.Clips(current)
+                    },
+                    onSnapshot = { snapshotPlaceholder(current) },
+                    onRequestRename = { renameTarget = current },
+                    onSwitchCamera = {
+                        if (devices.isNotEmpty()) {
+                            val idx = devices.indexOfFirst { it.device_sn == current.device_sn }
+                            val next = devices[(idx + 1) % devices.size]
+                            selectedDeviceSn = next.device_sn
+                            screen = Screen.CameraDetail(next)
+                            startLiveViewFlow(next)
+                        }
+                    },
+                )
+            }
 
             is Screen.Clips -> ClipsScreen(
                 deviceName = aliases.displayName(s.device),
@@ -325,6 +305,54 @@ class MainActivity : ComponentActivity() {
                 },
             )
         }
+    }
+
+    /**
+     * Replays AIWIT's MITM-captured live-view start sequence:
+     *   preview-finish (clear any stale viewer slot) ->
+     *   wakeup -> devices-state -> wakeup retry -> ping/10s
+     * On selection change, the next call's preview-finish for the old
+     * camera + the ping loop's `while` guard handle cleanup.
+     */
+    private fun startLiveViewFlow(d: Device) {
+        val sn = creds.appSn ?: return
+        val em = creds.email ?: return
+        lifecycleScope.launch {
+            // Clear any prior viewer-slot held by AIWIT or a previous session of
+            // ours — the server's `watcher_count` must drop to 0 before a fresh
+            // wakeup will trigger `fast-streaming` for the new viewer.
+            messaging.sendPreviewFinish(sn, d.device_sn)
+            kotlinx.coroutines.delay(500)
+
+            messaging.sendWakeup(sn, d.device_sn)
+            kotlinx.coroutines.delay(1500)
+            messaging.sendDevicesState(sn)
+            kotlinx.coroutines.delay(1500)
+            messaging.sendWakeup(sn, d.device_sn)
+
+            while (selectedDeviceSn == d.device_sn) {
+                messaging.sendPing(sn, d.device_sn, em)
+                kotlinx.coroutines.delay(10_000)
+            }
+            // Cleanly close the session when the user has moved on.
+            messaging.sendPreviewFinish(sn, d.device_sn)
+        }
+        lifecycleScope.launch {
+            repeat(10) {
+                kotlinx.coroutines.delay(3000)
+                if (selectedDeviceSn != d.device_sn) return@launch
+                try { devices = client.listDevices() } catch (_: Exception) {}
+            }
+        }
+    }
+
+    /** Snapshot stub for now — wired through to UI so the button works. */
+    private fun snapshotPlaceholder(d: Device) {
+        Toast.makeText(
+            this@MainActivity,
+            "Snapshot will work once live view is wired up.",
+            Toast.LENGTH_SHORT,
+        ).show()
     }
 
     private fun enqueueDownload(clip: Recording) {

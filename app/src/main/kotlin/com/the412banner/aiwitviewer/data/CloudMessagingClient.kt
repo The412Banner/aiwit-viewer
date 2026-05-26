@@ -231,6 +231,21 @@ class CloudMessagingClient(
         })
     }
 
+    /**
+     * End a live-view session. Matches m1/a.java line 324 (`k(str)`).
+     * The server replies with `watcher_count` — when it hits 0, the camera's
+     * viewer-slot is free and the next wakeup will trigger a fresh
+     * `fast-streaming` push. Sending this BEFORE wakeup clears any stale
+     * viewer-slot left over from a prior AIWIT session.
+     */
+    fun sendPreviewFinish(appSn: String, deviceSn: String) {
+        sendJson(org.json.JSONObject().apply {
+            put("cmd", "preview-finish")
+            put("udid", appSn)
+            put("peer", deviceSn)
+        })
+    }
+
     private fun md5Hex(s: String): String {
         val bytes = java.security.MessageDigest.getInstance("MD5").digest(s.toByteArray())
         return bytes.joinToString("") { "%02x".format(it) }
