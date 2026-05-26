@@ -17,6 +17,8 @@ import java.net.DatagramSocket
 import java.net.InetAddress
 import java.net.SocketTimeoutException
 import java.security.MessageDigest
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * Drives one camera's live preview end-to-end:
@@ -165,12 +167,12 @@ class LiveSession(private val context: Context) {
      * receives directly from `cloudIp:videoPort`, sending a periodic XOR-wrapped
      * `cmd:sync` packet as a NAT punch.
      */
-    fun onPreviewStartReply(deviceSn: String, pk: String, cloudIp: String, videoPort: Int) {
+    fun onPreviewStartReply(deviceSn: String, pk: String, cloudIp: String, videoPort: Int, speakPort: Int = 0) {
         val firstForThisSn = activeDeviceSn != deviceSn
         activeDeviceSn = deviceSn
         activePk = pk
         pkByDevice[deviceSn] = pk
-        Log.i(TAG, "onPreviewStartReply $deviceSn pk=$pk cloudIp=$cloudIp video_port=$videoPort firstTime=$firstForThisSn")
+        Log.i(TAG, "onPreviewStartReply $deviceSn pk=$pk cloudIp=$cloudIp video_port=$videoPort speak_port=$speakPort firstTime=$firstForThisSn")
 
         val session = P2PSession.getInstance(context)
 
@@ -200,7 +202,7 @@ class LiveSession(private val context: Context) {
             val existing = udpReceiverJobs[deviceSn]
             if (existing == null || !existing.isActive) {
                 udpReceiverJobs[deviceSn] = scope.launch {
-                    runUdpVideoReceiver(deviceSn, cloudIp, videoPort, pk)
+                    runUdpVideoReceiver(deviceSn, cloudIp, videoPort, pk, speakPort)
                 }
             } else {
                 Log.i(TAG, "UDP video receiver for $deviceSn already running — pk refreshed only")
@@ -217,7 +219,7 @@ class LiveSession(private val context: Context) {
         frameFlows[deviceSn]?.value = null
     }
 
-    private suspend fun runUdpVideoReceiver(deviceSn: String, cloudIp: String, port: Int, pk: String) = coroutineScope {
+    private suspend fun runUdpVideoReceiver(deviceSn: String, cloudIp: String, port: Int, pk: String, speakPort: Int = 0) = coroutineScope {
         val sn = appSn ?: run { Log.w(TAG, "no appSn yet, can't start UDP receiver"); return@coroutineScope }
         var socket: DatagramSocket? = null
         try {
@@ -230,6 +232,11 @@ class LiveSession(private val context: Context) {
             Log.e(TAG, "resolve $cloudIp failed", t); socket.close(); return@coroutineScope
         }
         Log.i(TAG, "UDP video receiver up: localPort=${socket.localPort} → $cloudIp:$port pk=${pk.take(6)}…")
+
+        val rxPkts = AtomicInteger(0)
+        val rxBytes = AtomicLong(0L)
+        val rtpParsed = AtomicInteger(0)
+        val rtpNull = AtomicInteger(0)
 
         // NAT-punch keepalive: send a `cmd:sync` packet every 2s so the cloud
         // relay can map us back through NAT.
@@ -245,10 +252,31 @@ class LiveSession(private val context: Context) {
             }
         }
 
-        var rxPkts = 0
-        var rxBytes = 0L
-        var rtpParsed = 0
-        var rtpNull = 0
+        // RDSession heartbeat: AIWIT's `class w` sends a `cmd:rdsession-heartbeat`
+        // JSON every 1-5s on the speak port carrying packet counters. The cloud
+        // appears to gate continued streaming on these — without them, after
+        // ~4 packets it stops sending video. Skip if no speak_port plumbed yet.
+        val heartbeatJob = if (speakPort > 0) launch {
+            var speakSocket: DatagramSocket? = null
+            try {
+                speakSocket = DatagramSocket()
+                Log.i(TAG, "rdsession-heartbeat sender up: localPort=${speakSocket.localPort} → $cloudIp:$speakPort")
+                while (isActive) {
+                    try {
+                        val pkt = buildRdSessionHeartbeatPacket(
+                            sn, deviceSn,
+                            rxBytes.get(), rxPkts.get().toLong(),
+                            rtpParsed.get().toLong()
+                        )
+                        speakSocket.send(DatagramPacket(pkt, pkt.size, addr, speakPort))
+                    } catch (t: Throwable) {
+                        Log.w(TAG, "rdsession-heartbeat send to $cloudIp:$speakPort failed: ${t.message}")
+                    }
+                    delay(1000)
+                }
+            } finally { try { speakSocket?.close() } catch (_: Throwable) {} }
+        } else null
+
         var lastLog = System.currentTimeMillis()
         val buf = ByteArray(1600)
         try {
@@ -261,14 +289,14 @@ class LiveSession(private val context: Context) {
                     if (!isActive) break
                     Log.w(TAG, "udp recv error: ${t.message}"); delay(50); continue
                 }
-                rxPkts++
-                rxBytes += datagram.length
+                val n = rxPkts.incrementAndGet()
+                rxBytes.addAndGet(datagram.length.toLong())
                 val raw = datagram.data.copyOf(datagram.length)
                 val decoded = xorDecodeIfNeeded(raw)
-                if (rxPkts <= 30) {
+                if (n <= 30) {
                     val rawHex = raw.take(16).joinToString(" ") { "%02x".format(it.toInt() and 0xff) }
                     val decHex = decoded?.take(16)?.joinToString(" ") { "%02x".format(it.toInt() and 0xff) } ?: "<null>"
-                    Log.i(TAG, "udp rx#$rxPkts raw len=${raw.size} first16=[$rawHex] -> dec len=${decoded?.size ?: -1} first16=[$decHex]")
+                    Log.i(TAG, "udp rx#$n raw len=${raw.size} first16=[$rawHex] -> dec len=${decoded?.size ?: -1} first16=[$decHex]")
                 }
                 if (decoded == null) continue
                 if (decoded.size < 12) continue
@@ -277,25 +305,26 @@ class LiveSession(private val context: Context) {
                 val frame = try { n1.c.k(decoded, pk) } catch (t: Throwable) {
                     Log.w(TAG, "n1.c.k threw on udp pkt: ${t::class.java.simpleName}: ${t.message}", t); null
                 }
-                if (rxPkts in 3..10) {
+                if (n in 3..10) {
                     val payloadLen = try { frame?.l()?.size } catch (_: Throwable) { -2 }
                     val type = try { frame?.i() } catch (_: Throwable) { -2 }
-                    Log.i(TAG, "udp pkt#$rxPkts n1.c.k => ${if (frame == null) "NULL" else "type=$type seq=${frame.m()} payload-len=$payloadLen"}")
+                    Log.i(TAG, "udp pkt#$n n1.c.k => ${if (frame == null) "NULL" else "type=$type seq=${frame.m()} payload-len=$payloadLen"}")
                 }
                 if (frame == null) {
-                    rtpNull++
+                    rtpNull.incrementAndGet()
                 } else {
-                    rtpParsed++
+                    rtpParsed.incrementAndGet()
                     sessionByDevice.getOrPut(deviceSn) { n1.a() }.f(frame)
                 }
                 val now = System.currentTimeMillis()
                 if (now - lastLog > 2000) {
-                    Log.i(TAG, "udp $deviceSn: pkts=$rxPkts bytes=$rxBytes rtp-parsed=$rtpParsed rtp-null=$rtpNull")
+                    Log.i(TAG, "udp $deviceSn: pkts=${rxPkts.get()} bytes=${rxBytes.get()} rtp-parsed=${rtpParsed.get()} rtp-null=${rtpNull.get()}")
                     lastLog = now
                 }
             }
         } finally {
             natJob.cancel()
+            heartbeatJob?.cancel()
             try { socket.close() } catch (_: Throwable) {}
             Log.i(TAG, "UDP video receiver stopped for $deviceSn")
         }
@@ -331,6 +360,42 @@ class LiveSession(private val context: Context) {
             put("type", "udp")
             put("k", k)
             put("from", from)
+        }.toString().toByteArray(Charsets.UTF_8)
+        val encrypted = ByteArray(json.size)
+        for (i in json.indices) {
+            encrypted[i] = (json[i].toInt() xor XOR_KEY[i % XOR_KEY.size].toInt()).toByte()
+        }
+        val out = ByteArray(encrypted.size + 12)
+        out[0] = 0x90.toByte()
+        System.arraycopy(encrypted, 0, out, 12, encrypted.size)
+        return out
+    }
+
+    /**
+     * Mirror of `LiveViewForTwoWayIntercom.t2`: build a `cmd:rdsession-heartbeat`
+     * JSON wrapped via y1.e.O. Sent on the speak port; AIWIT sends this every
+     * 1-5s while a live view is open and the cloud appears to gate continued
+     * streaming on receiving it.
+     */
+    private fun buildRdSessionHeartbeatPacket(
+        appSn: String,
+        peerSn: String,
+        rxBytes: Long,
+        rxPackets: Long,
+        parsedPackets: Long,
+    ): ByteArray {
+        val json = JSONObject().apply {
+            put("cmd", "rdsession-heartbeat")
+            put("udid", appSn)
+            put("peer", peerSn)
+            put("type", "udp")
+            put("net_mode", 1)
+            put("speed", (rxBytes / 1024L) / 5L)
+            put("packet_loss", 0.0)
+            put("receive_video_count", rxPackets)
+            put("miss_video_count", 0L)
+            put("parser_video_count", parsedPackets)
+            put("surface_video_count", parsedPackets)
         }.toString().toByteArray(Charsets.UTF_8)
         val encrypted = ByteArray(json.size)
         for (i in json.indices) {

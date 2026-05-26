@@ -74,8 +74,9 @@ class MainActivity : ComponentActivity() {
                 val pk = obj.optString("pk", "")
                 val cloudIp = obj.optString("ip", "")
                 val videoPort = obj.optInt("video_port", 0)
+                val speakPort = obj.optInt("speak_port", 0)
                 if (peer.isNotBlank() && pk.isNotBlank()) {
-                    live.onPreviewStartReply(peer, pk, cloudIp, videoPort)
+                    live.onPreviewStartReply(peer, pk, cloudIp, videoPort, speakPort)
                 }
             }
         }
