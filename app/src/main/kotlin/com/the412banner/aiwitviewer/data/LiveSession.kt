@@ -129,6 +129,8 @@ class LiveSession(private val context: Context) {
         }
     }
 
+    private val connectJobs = mutableMapOf<String, Job>()
+
     /** Hand off the cmd-server's `preview-start` reply: cache pk, kick connectToPeer + poller. */
     fun onPreviewStartReply(deviceSn: String, pk: String) {
         Log.i(TAG, "onPreviewStartReply $deviceSn pk=$pk (cached) — kicking connectToPeer")
@@ -141,18 +143,32 @@ class LiveSession(private val context: Context) {
             scope.launch { pollFramesLoop(deviceSn) }
         }
 
-        try {
-            session.disconnectToPeer(deviceSn)
-        } catch (_: Throwable) {}
-        try {
-            session.connectToPeer(deviceSn)
-        } catch (t: Throwable) {
-            Log.e(TAG, "connectToPeer threw", t)
+        // Retry connectToPeer every 4s for up to 60s. The lib's connect goes
+        // through the relay, which only knows about the camera once it's
+        // physically online and registered — typically 5-20s after wakeup.
+        connectJobs.remove(deviceSn)?.cancel()
+        connectJobs[deviceSn] = scope.launch {
+            repeat(15) { attempt ->
+                if (connectedFlows[deviceSn]?.value == true) {
+                    Log.i(TAG, "$deviceSn connected, stopping retries")
+                    return@launch
+                }
+                try {
+                    if (attempt > 0) session.disconnectToPeer(deviceSn)
+                    session.connectToPeer(deviceSn)
+                    Log.i(TAG, "$deviceSn connectToPeer attempt #${attempt + 1}")
+                } catch (t: Throwable) {
+                    Log.w(TAG, "$deviceSn connectToPeer attempt #${attempt + 1} threw", t)
+                }
+                delay(4000)
+            }
+            Log.w(TAG, "$deviceSn — gave up retrying connectToPeer after 60s")
         }
     }
 
     fun stop(deviceSn: String) {
         pollerJobs.remove(deviceSn)?.cancel()
+        connectJobs.remove(deviceSn)?.cancel()
         try { P2PSession.getInstance(context).disconnectToPeer(deviceSn) } catch (_: Throwable) {}
         connectedFlows[deviceSn]?.value = false
         frameFlows[deviceSn]?.value = null
