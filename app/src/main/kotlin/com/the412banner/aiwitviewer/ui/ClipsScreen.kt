@@ -8,14 +8,12 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.CalendarToday
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.*
-import androidx.compose.material3.pulltorefresh.PullToRefreshContainer
-import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.unit.dp
 import com.the412banner.aiwitviewer.data.Recording
 import java.text.SimpleDateFormat
@@ -49,14 +47,6 @@ fun ClipsScreen(
     var showDatePicker by remember { mutableStateOf(false) }
     var playingClip by remember(deviceName) { mutableStateOf<Recording?>(null) }
 
-    val refreshState = rememberPullToRefreshState()
-    LaunchedEffect(refreshState.isRefreshing) {
-        if (refreshState.isRefreshing) onRefresh()
-    }
-    LaunchedEffect(isLoading, refreshState.isRefreshing) {
-        if (!isLoading && refreshState.isRefreshing) refreshState.endRefresh()
-    }
-
     Scaffold(
         topBar = {
             TopAppBar(
@@ -72,6 +62,16 @@ fun ClipsScreen(
                     }
                 },
                 actions = {
+                    IconButton(onClick = onRefresh, enabled = !isLoading) {
+                        if (isLoading) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(20.dp),
+                                strokeWidth = 2.dp,
+                            )
+                        } else {
+                            Icon(Icons.Filled.Refresh, contentDescription = "Refresh")
+                        }
+                    }
                     IconButton(onClick = { showDatePicker = true }) {
                         Icon(Icons.Filled.CalendarToday, contentDescription = "Pick date")
                     }
@@ -80,7 +80,6 @@ fun ClipsScreen(
         },
     ) { padding ->
         Column(modifier = Modifier.padding(padding).fillMaxSize()) {
-            // Sticky top area: live placeholder by default, inline clip player when a clip is tapped.
             Box(modifier = Modifier.padding(12.dp)) {
                 val clip = playingClip
                 if (clip == null) {
@@ -96,11 +95,7 @@ fun ClipsScreen(
             }
             HorizontalDivider()
 
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .nestedScroll(refreshState.nestedScrollConnection),
-            ) {
+            Box(modifier = Modifier.fillMaxSize()) {
                 when {
                     isLoading && clips.isEmpty() -> {
                         Column(
@@ -140,11 +135,6 @@ fun ClipsScreen(
                         }
                     }
                 }
-
-                PullToRefreshContainer(
-                    state = refreshState,
-                    modifier = Modifier.align(Alignment.TopCenter),
-                )
             }
         }
     }
@@ -204,7 +194,6 @@ private fun triggerLabel(type: String): String = when (type) {
     else -> type.ifBlank { "?" }
 }
 
-/** Convert an epoch-millis (any tz) to a YYYYMMDD string in the device's local timezone. */
 fun epochMillisToYyyymmdd(epochMillis: Long): String {
     val cal = Calendar.getInstance().apply { timeInMillis = epochMillis }
     return "%04d%02d%02d".format(cal.get(Calendar.YEAR), cal.get(Calendar.MONTH) + 1, cal.get(Calendar.DAY_OF_MONTH))

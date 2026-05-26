@@ -12,14 +12,12 @@ import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.DriveFileRenameOutline
 import androidx.compose.material.icons.filled.Logout
 import androidx.compose.material.icons.filled.PlayCircle
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.*
-import androidx.compose.material3.pulltorefresh.PullToRefreshContainer
-import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.unit.dp
 import com.the412banner.aiwitviewer.data.Device
 import kotlinx.coroutines.flow.StateFlow
@@ -40,18 +38,6 @@ fun CameraListScreen(
     onRequestRename: (Device) -> Unit,
     liveFrameFlow: (String) -> StateFlow<Bitmap?>,
 ) {
-    val refreshState = rememberPullToRefreshState()
-    // Only kick onRefresh when the user actually pulled — don't fire on initial composition.
-    LaunchedEffect(refreshState.isRefreshing) {
-        if (refreshState.isRefreshing) onRefresh()
-    }
-    // Only end the refresh spinner when the load is done AND a refresh was active —
-    // otherwise we'd call endRefresh on initial composition and leave the indicator
-    // in a half-retracted "gray circle" state next time it actually fires.
-    LaunchedEffect(isLoading, refreshState.isRefreshing) {
-        if (!isLoading && refreshState.isRefreshing) refreshState.endRefresh()
-    }
-
     val selected = devices.firstOrNull { it.device_sn == selectedDeviceSn }
 
     Scaffold(
@@ -59,6 +45,16 @@ fun CameraListScreen(
             TopAppBar(
                 title = { Text("Cameras") },
                 actions = {
+                    IconButton(onClick = onRefresh, enabled = !isLoading) {
+                        if (isLoading) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(20.dp),
+                                strokeWidth = 2.dp,
+                            )
+                        } else {
+                            Icon(Icons.Filled.Refresh, contentDescription = "Refresh")
+                        }
+                    }
                     IconButton(onClick = onLogout) {
                         Icon(Icons.Filled.Logout, contentDescription = "Log out")
                     }
@@ -67,7 +63,6 @@ fun CameraListScreen(
         },
     ) { padding ->
         Column(modifier = Modifier.padding(padding).fillMaxSize()) {
-            // Sticky top live area — placeholder until frames arrive, then the live preview.
             Box(modifier = Modifier.padding(12.dp)) {
                 if (selected == null) {
                     LivePipBannerEmpty()
@@ -82,15 +77,11 @@ fun CameraListScreen(
             }
             HorizontalDivider()
 
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .nestedScroll(refreshState.nestedScrollConnection),
-            ) {
+            Box(modifier = Modifier.fillMaxSize()) {
                 when {
                     isLoading && devices.isEmpty() -> {
                         Column(
-                            Modifier.fillMaxSize(),
+                            modifier = Modifier.fillMaxSize(),
                             verticalArrangement = Arrangement.Center,
                             horizontalAlignment = Alignment.CenterHorizontally,
                         ) {
@@ -101,7 +92,7 @@ fun CameraListScreen(
                     }
                     errorText != null && devices.isEmpty() -> {
                         Column(
-                            Modifier.padding(24.dp).fillMaxSize(),
+                            modifier = Modifier.padding(24.dp).fillMaxSize(),
                             verticalArrangement = Arrangement.Center,
                             horizontalAlignment = Alignment.CenterHorizontally,
                         ) {
@@ -126,7 +117,6 @@ fun CameraListScreen(
                         }
                     }
                 }
-                PullToRefreshContainer(state = refreshState, modifier = Modifier.align(Alignment.TopCenter))
             }
         }
     }

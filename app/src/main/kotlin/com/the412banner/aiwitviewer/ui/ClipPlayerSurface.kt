@@ -10,6 +10,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Replay
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -26,18 +27,16 @@ import java.net.HttpURLConnection
 import java.net.URL
 
 private const val TAG = "ClipPlayerSurface"
-private const val FEED_CHUNK_BYTES = 32 * 1024
+private const val FEED_CHUNK_BYTES = 16 * 1024
 
 /**
- * Inline clip player — the same EZCloudStoragePlayer wiring we had in the
- * standalone PlayerScreen, but rendered as a reusable composable that can be
- * embedded in the top of another screen (currently used above the clips list
- * on the ClipsScreen).
+ * Inline clip player with throttled feed + control bar.
  *
- * Lifecycle: the native player is created/torn down by a [DisposableEffect]
- * keyed to [Recording.fileName]. Tapping a different clip swaps the player
- * cleanly. A close button signals the caller (via [onClose]) that the user
- * wants to dismiss the player and go back to whatever placeholder was here.
+ * The .ts2 recordings are video-only; the native lib has no audio clock to
+ * pace decode against. Feeding bytes as fast as we can read them causes the
+ * player to render every frame instantly — an 18s clip plays in under a
+ * second. To fix, we feed at the clip's natural bitrate (length / duration)
+ * plus a small look-ahead buffer, throttled with a sleep loop.
  */
 @Composable
 fun ClipPlayerSurface(
@@ -52,24 +51,27 @@ fun ClipPlayerSurface(
     var statusText by remember(clip.fileName) { mutableStateOf("Preparing…") }
     var errorText by remember(clip.fileName) { mutableStateOf<String?>(null) }
     var downloadProgress by remember(clip.fileName) { mutableFloatStateOf(0f) }
-    var bufferProgress by remember(clip.fileName) { mutableFloatStateOf(0f) }
     var videoWidth by remember(clip.fileName) { mutableIntStateOf(0) }
     var videoHeight by remember(clip.fileName) { mutableIntStateOf(0) }
+    var positionSec by remember(clip.fileName) { mutableFloatStateOf(0f) }
+    var totalDurationSec by remember(clip.fileName) { mutableFloatStateOf(clip.duration / 1000f) }
+    var restartTick by remember(clip.fileName) { mutableIntStateOf(0) }
     val scope = rememberCoroutineScope()
 
-    DisposableEffect(clip.fileName) {
+    DisposableEffect(clip.fileName, restartTick) {
         val cacheFile = "$cacheDirPath/${clip.fileName.replace('/', '_')}.cache"
         val p = EZCloudStoragePlayer("", "", cacheFile, false)
         p.setExceptedLength(clip.length)
         p.setFormatFlag(formatFlagFor(clip.fileName))
         p.setPKey(clip.pk)
         p.setListener(object : EZCloudStoragePlayer.Listener {
-            override fun onCached(ratio: Float) { bufferProgress = ratio.coerceIn(0f, 1f) }
+            override fun onCached(ratio: Float) { /* cache write progress — ignore */ }
             override fun onCheckoutInfo(width: Int, height: Int, duration: Float) {
                 videoWidth = width; videoHeight = height
-                statusText = "${width}×${height} • ${"%.1fs".format(duration)}"
+                if (duration > 0) totalDurationSec = duration
+                statusText = "${width}×${height}"
             }
-            override fun onComplete() { statusText = "Complete" }
+            override fun onComplete() { statusText = "Complete"; positionSec = totalDurationSec }
             override fun onError(code: Int, message: String?) {
                 errorText = "$code: ${message ?: "(no message)"}"
                 Log.e(TAG, "player error $code: $message")
@@ -77,7 +79,7 @@ fun ClipPlayerSurface(
             override fun onPCMCallback(pcm: ByteArray?, len: Int, ts: Float) {}
             override fun onPCMParamCallback(sampleRate: Int, channels: Int, bitsPerSample: Int) {}
             override fun onPerpare() { statusText = "Buffering…" }
-            override fun onPlaying(position: Float) {}
+            override fun onPlaying(position: Float) { positionSec = position }
             override fun onRenderNNInfo(info: String?) {}
             override fun onStart() { statusText = "Playing" }
             override fun onStop() { statusText = "Stopped" }
@@ -139,21 +141,15 @@ fun ClipPlayerSurface(
                     },
                 )
             }
-
-            // Close button overlay (top-right)
             IconButton(
                 onClick = onClose,
                 modifier = Modifier.align(Alignment.TopEnd).padding(4.dp),
             ) {
-                Icon(
-                    Icons.Filled.Close,
-                    contentDescription = "Close player",
-                    tint = Color.White.copy(alpha = 0.85f),
-                )
+                Icon(Icons.Filled.Close, contentDescription = "Close player", tint = Color.White.copy(alpha = 0.85f))
             }
         }
 
-        // Slim status row under the surface — keeps the inline footprint small.
+        // Control bar
         Row(
             modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -164,30 +160,63 @@ fun ClipPlayerSurface(
                     isPaused = !isPaused
                     p.pause(isPaused)
                 },
-                modifier = Modifier.size(32.dp),
+                modifier = Modifier.size(36.dp),
             ) {
                 Icon(
                     if (isPaused) Icons.Filled.PlayArrow else Icons.Filled.Pause,
                     contentDescription = if (isPaused) "Resume" else "Pause",
                 )
             }
-            Spacer(Modifier.width(8.dp))
-            Column(modifier = Modifier.weight(1f)) {
-                Text(statusText, style = MaterialTheme.typography.bodySmall)
-                val dlVisible = downloadProgress > 0f && downloadProgress < 1f
-                val bufVisible = bufferProgress > 0f && bufferProgress < 1f
-                if (dlVisible || bufVisible) {
-                    LinearProgressIndicator(
-                        progress = { if (dlVisible) downloadProgress else bufferProgress },
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                }
+            IconButton(
+                onClick = {
+                    positionSec = 0f
+                    isPaused = false
+                    restartTick++  // forces DisposableEffect to recreate player
+                },
+                modifier = Modifier.size(36.dp),
+            ) {
+                Icon(Icons.Filled.Replay, contentDescription = "Restart from beginning")
             }
+            Spacer(Modifier.width(4.dp))
+            Text(
+                fmtTime(positionSec),
+                style = MaterialTheme.typography.labelSmall,
+                modifier = Modifier.widthIn(min = 36.dp),
+            )
+            Slider(
+                value = positionSec.coerceIn(0f, totalDurationSec),
+                onValueChange = { /* read-only — lib doesn't expose seek; user can Restart */ },
+                valueRange = 0f..totalDurationSec.coerceAtLeast(0.001f),
+                enabled = false, // visible progress, not draggable
+                modifier = Modifier.weight(1f).padding(horizontal = 6.dp),
+            )
+            Text(
+                fmtTime(totalDurationSec),
+                style = MaterialTheme.typography.labelSmall,
+                modifier = Modifier.widthIn(min = 36.dp),
+            )
         }
+        if (downloadProgress > 0f && downloadProgress < 1f) {
+            LinearProgressIndicator(
+                progress = { downloadProgress },
+                modifier = Modifier.fillMaxWidth().padding(top = 2.dp),
+            )
+        }
+        Text(
+            statusText,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+            modifier = Modifier.padding(start = 8.dp, top = 2.dp),
+        )
     }
 }
 
-/** Stream the OSS-signed .ts2 into the native player + a local cache file. */
+private fun fmtTime(sec: Float): String {
+    val s = sec.coerceAtLeast(0f).toInt()
+    return "%d:%02d".format(s / 60, s % 60)
+}
+
+/** Stream the OSS-signed .ts2 into the native player at the clip's natural bitrate. */
 private suspend fun feedClipIntoPlayer(
     clip: Recording,
     cacheFilePath: String,
@@ -209,8 +238,17 @@ private suspend fun feedClipIntoPlayer(
             return
         }
         val totalBytes = if (clip.length > 0) clip.length else conn.contentLengthLong
+        // Throttle target: feed bytes at the clip's natural bitrate, with a 2-second
+        // lookahead so the decoder has buffer headroom but doesn't burst-decode.
+        val bytesPerSec: Long = if (clip.duration > 0 && totalBytes > 0) {
+            (totalBytes * 1000L / clip.duration).coerceAtLeast(8_000L)
+        } else {
+            Long.MAX_VALUE
+        }
+        val lookaheadBytes = bytesPerSec * 2  // 2 seconds of headroom
         val buf = ByteArray(FEED_CHUNK_BYTES)
         var pushed: Long = 0
+        val startMs = System.currentTimeMillis()
         conn.inputStream.use { input ->
             FileOutputStream(cacheFilePath).use { cache ->
                 while (true) {
@@ -227,6 +265,14 @@ private suspend fun feedClipIntoPlayer(
                     cache.write(buf, 0, n)
                     pushed += n
                     if (totalBytes > 0) onProgress(pushed.toFloat() / totalBytes.toFloat())
+
+                    // Throttle: how long should we have taken to reach `pushed`?
+                    if (bytesPerSec != Long.MAX_VALUE) {
+                        val expectedMs = ((pushed - lookaheadBytes).coerceAtLeast(0) * 1000L) / bytesPerSec
+                        val actualMs = System.currentTimeMillis() - startMs
+                        val sleepMs = expectedMs - actualMs
+                        if (sleepMs > 5) delay(sleepMs)
+                    }
                 }
             }
         }
