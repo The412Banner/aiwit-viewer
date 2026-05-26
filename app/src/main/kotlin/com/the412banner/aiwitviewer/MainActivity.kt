@@ -185,7 +185,11 @@ class MainActivity : ComponentActivity() {
                     onSelectDevice = { d ->
                         selectedDeviceSn = d.device_sn
                         screen = Screen.CameraDetail(d)
-                        startLiveViewFlow(d)
+                        startLiveViewFlow(
+                            d,
+                            getSelectedSn = { selectedDeviceSn },
+                            onDevicesRefreshed = { devices = it },
+                        )
                     },
                     onOpenClips = { d ->
                         selectedDeviceSn = d.device_sn
@@ -249,7 +253,11 @@ class MainActivity : ComponentActivity() {
                             val next = devices[(idx + 1) % devices.size]
                             selectedDeviceSn = next.device_sn
                             screen = Screen.CameraDetail(next)
-                            startLiveViewFlow(next)
+                            startLiveViewFlow(
+                                next,
+                                getSelectedSn = { selectedDeviceSn },
+                                onDevicesRefreshed = { devices = it },
+                            )
                         }
                     },
                 )
@@ -311,37 +319,34 @@ class MainActivity : ComponentActivity() {
      * Replays AIWIT's MITM-captured live-view start sequence:
      *   preview-finish (clear any stale viewer slot) ->
      *   wakeup -> devices-state -> wakeup retry -> ping/10s
-     * On selection change, the next call's preview-finish for the old
-     * camera + the ping loop's `while` guard handle cleanup.
      */
-    private fun startLiveViewFlow(d: Device) {
+    private fun startLiveViewFlow(
+        d: Device,
+        getSelectedSn: () -> String?,
+        onDevicesRefreshed: (List<Device>) -> Unit,
+    ) {
         val sn = creds.appSn ?: return
         val em = creds.email ?: return
         lifecycleScope.launch {
-            // Clear any prior viewer-slot held by AIWIT or a previous session of
-            // ours — the server's `watcher_count` must drop to 0 before a fresh
-            // wakeup will trigger `fast-streaming` for the new viewer.
             messaging.sendPreviewFinish(sn, d.device_sn)
             kotlinx.coroutines.delay(500)
-
             messaging.sendWakeup(sn, d.device_sn)
             kotlinx.coroutines.delay(1500)
             messaging.sendDevicesState(sn)
             kotlinx.coroutines.delay(1500)
             messaging.sendWakeup(sn, d.device_sn)
 
-            while (selectedDeviceSn == d.device_sn) {
+            while (getSelectedSn() == d.device_sn) {
                 messaging.sendPing(sn, d.device_sn, em)
                 kotlinx.coroutines.delay(10_000)
             }
-            // Cleanly close the session when the user has moved on.
             messaging.sendPreviewFinish(sn, d.device_sn)
         }
         lifecycleScope.launch {
             repeat(10) {
                 kotlinx.coroutines.delay(3000)
-                if (selectedDeviceSn != d.device_sn) return@launch
-                try { devices = client.listDevices() } catch (_: Exception) {}
+                if (getSelectedSn() != d.device_sn) return@launch
+                try { onDevicesRefreshed(client.listDevices()) } catch (_: Exception) {}
             }
         }
     }
