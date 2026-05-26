@@ -257,12 +257,16 @@ class LiveSession(private val context: Context) {
                 rxPkts++
                 rxBytes += datagram.length
                 val raw = datagram.data.copyOf(datagram.length)
-                if (rxPkts <= 3) {
-                    val hex = raw.take(16).joinToString(" ") { "%02x".format(it.toInt() and 0xff) }
-                    Log.i(TAG, "udp rx#$rxPkts len=${raw.size} first16=[$hex]")
+                val decoded = xorDecodeIfNeeded(raw)
+                if (rxPkts <= 30) {
+                    val rawHex = raw.take(16).joinToString(" ") { "%02x".format(it.toInt() and 0xff) }
+                    val decHex = decoded?.take(16)?.joinToString(" ") { "%02x".format(it.toInt() and 0xff) } ?: "<null>"
+                    Log.i(TAG, "udp rx#$rxPkts raw len=${raw.size} first16=[$rawHex] -> dec len=${decoded?.size ?: -1} first16=[$decHex]")
                 }
-                val decoded = xorDecodeIfNeeded(raw) ?: continue
-                if (decoded.size < 12 || decoded[0] != 0x80.toByte()) continue
+                if (decoded == null) continue
+                if (decoded.size < 12) continue
+                val isRtp = decoded[0] in 0x80.toByte()..0x83.toByte()
+                if (!isRtp) continue
                 val frame = try { n1.c.k(decoded, pk) } catch (t: Throwable) {
                     Log.w(TAG, "n1.c.k threw on udp pkt", t); null
                 }
