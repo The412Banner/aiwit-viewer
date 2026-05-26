@@ -1,7 +1,6 @@
 package n1;
 
 import com.google.common.base.Ascii;
-import com.google.common.primitives.UnsignedBytes;
 // (was: import com.mbridge.msdk.playercommon.exoplayer2.source.ExtractorMediaSource;) — constant inlined
 import java.io.PrintStream;
 import java.nio.ByteBuffer;
@@ -109,7 +108,7 @@ public class a {
         }
         StringBuilder sb = new StringBuilder(i8 * 2);
         for (int i9 = 0; i9 < i8; i9++) {
-            sb.append(String.format("%02X ", new Integer(bArr[i9] & UnsignedBytes.MAX_VALUE)));
+            sb.append(String.format("%02X ", new Integer(bArr[i9] & 0xFF)));
         }
         return sb.toString();
     }

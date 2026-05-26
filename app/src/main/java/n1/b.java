@@ -1,6 +1,5 @@
 package n1;
 
-import com.google.common.primitives.UnsignedBytes;
 import java.nio.ByteBuffer;
 
 /* JADX INFO: compiled from: FrameData.java */
@@ -31,7 +30,7 @@ public class b {
         }
         StringBuilder sb = new StringBuilder(i8 * 2);
         for (int i9 = 0; i9 < i8; i9++) {
-            sb.append(String.format("%02X ", new Integer(bArr[i9] & UnsignedBytes.MAX_VALUE)));
+            sb.append(String.format("%02X ", new Integer(bArr[i9] & 0xFF)));
         }
         return sb.toString();
     }

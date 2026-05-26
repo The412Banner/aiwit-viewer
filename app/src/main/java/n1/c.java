@@ -4,7 +4,6 @@ import android.text.TextUtils;
 import cn.coderfly.ezmediautils.EZMediaUtils;
 import com.eken.doorbell.bean.RectInfo;
 import com.google.common.base.Ascii;
-import com.google.common.primitives.UnsignedBytes;
 // (was: import com.mbridge.msdk.MBridgeConstans;) — value inlined as "0"
 import java.util.ArrayList;
 import java.util.List;
@@ -57,20 +56,20 @@ public class c {
         int i8;
         int i9;
         if (bArr.length == 1) {
-            return bArr[0] & UnsignedBytes.MAX_VALUE;
+            return bArr[0] & 0xFF;
         }
         if (bArr.length == 2) {
-            i8 = bArr[0] & UnsignedBytes.MAX_VALUE;
-            i9 = (bArr[1] & UnsignedBytes.MAX_VALUE) << 8;
+            i8 = bArr[0] & 0xFF;
+            i9 = (bArr[1] & 0xFF) << 8;
         } else if (bArr.length == 3) {
-            i8 = (bArr[0] & UnsignedBytes.MAX_VALUE) | ((bArr[1] & UnsignedBytes.MAX_VALUE) << 8);
-            i9 = (bArr[2] & UnsignedBytes.MAX_VALUE) << 16;
+            i8 = (bArr[0] & 0xFF) | ((bArr[1] & 0xFF) << 8);
+            i9 = (bArr[2] & 0xFF) << 16;
         } else {
             if (bArr.length != 4) {
                 return 0;
             }
-            i8 = (bArr[0] & UnsignedBytes.MAX_VALUE) | ((bArr[1] & UnsignedBytes.MAX_VALUE) << 8) | ((bArr[2] & UnsignedBytes.MAX_VALUE) << 16);
-            i9 = (bArr[3] & UnsignedBytes.MAX_VALUE) << 24;
+            i8 = (bArr[0] & 0xFF) | ((bArr[1] & 0xFF) << 8) | ((bArr[2] & 0xFF) << 16);
+            i9 = (bArr[3] & 0xFF) << 24;
         }
         return i8 | i9;
     }
@@ -80,7 +79,7 @@ public class c {
     }
 
     public static int c(byte b8) {
-        return b8 & UnsignedBytes.MAX_VALUE;
+        return b8 & 0xFF;
     }
 
     public static byte[] d(byte[] bArr, int i8, int i9, int i10) {
@@ -188,7 +187,7 @@ public class c {
     }
 
     public static int t(byte[] bArr, int i8) {
-        return (bArr[i8 + 3] & UnsignedBytes.MAX_VALUE) | ((bArr[i8] & UnsignedBytes.MAX_VALUE) << 24) | ((bArr[i8 + 1] & UnsignedBytes.MAX_VALUE) << 16) | ((bArr[i8 + 2] & UnsignedBytes.MAX_VALUE) << 8);
+        return (bArr[i8 + 3] & 0xFF) | ((bArr[i8] & 0xFF) << 24) | ((bArr[i8 + 1] & 0xFF) << 16) | ((bArr[i8 + 2] & 0xFF) << 8);
     }
 
     public int g() {
