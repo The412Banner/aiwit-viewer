@@ -68,10 +68,14 @@ class MainActivity : ComponentActivity() {
             // Either is fine — both carry the same per-session pk. Use whichever
             // arrives first.
             if ((cmd == "preview-start" || cmd == "wakeup") && obj.optInt("err_no", -1) == 0) {
-                val peer = obj.optString("peer", "")
+                // wakeup REPLY puts the SN in "peer"; preview-start NOTIFICATION
+                // puts it in "udid". Accept either.
+                val peer = obj.optString("peer", "").ifBlank { obj.optString("udid", "") }
                 val pk = obj.optString("pk", "")
+                val cloudIp = obj.optString("ip", "")
+                val videoPort = obj.optInt("video_port", 0)
                 if (peer.isNotBlank() && pk.isNotBlank()) {
-                    live.onPreviewStartReply(peer, pk)
+                    live.onPreviewStartReply(peer, pk, cloudIp, videoPort)
                 }
             }
         }

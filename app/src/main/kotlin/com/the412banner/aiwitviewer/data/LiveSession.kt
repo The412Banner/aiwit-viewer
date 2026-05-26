@@ -10,7 +10,13 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import org.json.JSONException
+import org.json.JSONObject
 import java.io.IOException
+import java.net.DatagramPacket
+import java.net.DatagramSocket
+import java.net.InetAddress
+import java.net.SocketTimeoutException
+import java.security.MessageDigest
 
 /**
  * Drives one camera's live preview end-to-end:
@@ -28,7 +34,13 @@ import java.io.IOException
  */
 class LiveSession(private val context: Context) {
 
-    companion object { private const val TAG = "LiveSession" }
+    companion object {
+        private const val TAG = "LiveSession"
+        // From AIWIT's y1.e (XOR transform applied to cloud-relay UDP payloads).
+        private val XOR_KEY = "jq_Q#`@Ui{&Nx:1HVMrvw\$zKT[GX<9Wg".toByteArray(Charsets.US_ASCII)
+        // Same salt as the cmd-server signing (DoorbellApplication.f13706c).
+        private const val CMD_SIGN_SALT = "eead%Hb27Zf\$v#vG"
+    }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private class RxStats(var rxBytes: Int = 0, var rxTotal: Long = 0, var parseOk: Int = 0, var parseNull: Int = 0)
@@ -143,16 +155,22 @@ class LiveSession(private val context: Context) {
     }
 
     private val connectJobs = mutableMapOf<String, Job>()
+    private val udpReceiverJobs = mutableMapOf<String, Job>()
 
-    /** Hand off the cmd-server's `wakeup`/`preview-start` reply: cache pk, kick connectToPeer + poller. */
-    fun onPreviewStartReply(deviceSn: String, pk: String) {
-        // First call wins as active. Subsequent calls (e.g. preview-start notification
-        // arriving after the wakeup reply for the same camera) just refresh the pk.
+    /**
+     * Hand off the cmd-server's `wakeup`/`preview-start` reply. The reply
+     * carries the per-session AES key (pk), the cloud-relay IP, and per-stream
+     * UDP ports. The actual video bytes do NOT come through `p2pReceiveDataCall`;
+     * AIWIT's `LiveViewForTwoWayIntercom.f.run` opens its own DatagramSocket and
+     * receives directly from `cloudIp:videoPort`, sending a periodic XOR-wrapped
+     * `cmd:sync` packet as a NAT punch.
+     */
+    fun onPreviewStartReply(deviceSn: String, pk: String, cloudIp: String, videoPort: Int) {
         val firstForThisSn = activeDeviceSn != deviceSn
         activeDeviceSn = deviceSn
         activePk = pk
         pkByDevice[deviceSn] = pk
-        Log.i(TAG, "onPreviewStartReply $deviceSn pk=$pk (active=$deviceSn, firstTime=$firstForThisSn)")
+        Log.i(TAG, "onPreviewStartReply $deviceSn pk=$pk cloudIp=$cloudIp video_port=$videoPort firstTime=$firstForThisSn")
 
         val session = P2PSession.getInstance(context)
 
@@ -161,12 +179,11 @@ class LiveSession(private val context: Context) {
             scope.launch { pollFramesLoop(deviceSn) }
         }
 
-        // Call connectToPeer ONCE. The lib's internal retry/state machine handles
-        // the rest. Calling repeatedly was resetting state and confusing the lib.
+        // Keep the libVCTP2P connection going — AIWIT uses it for control messages
+        // (heartbeats, intercom signalling) while the video flows over the
+        // separate UDP socket below.
         if (firstForThisSn) {
-            try {
-                session.disconnectToPeer(deviceSn)
-            } catch (_: Throwable) {}
+            try { session.disconnectToPeer(deviceSn) } catch (_: Throwable) {}
             try {
                 session.connectToPeer(deviceSn)
                 Log.i(TAG, "$deviceSn connectToPeer called once")
@@ -174,14 +191,147 @@ class LiveSession(private val context: Context) {
                 Log.e(TAG, "connectToPeer threw", t)
             }
         }
+
+        // Start (or restart) the cloud-relay UDP video receiver for this camera.
+        if (cloudIp.isNotBlank() && videoPort > 0) {
+            udpReceiverJobs.remove(deviceSn)?.cancel()
+            udpReceiverJobs[deviceSn] = scope.launch {
+                runUdpVideoReceiver(deviceSn, cloudIp, videoPort, pk)
+            }
+        }
     }
 
     fun stop(deviceSn: String) {
         pollerJobs.remove(deviceSn)?.cancel()
         connectJobs.remove(deviceSn)?.cancel()
+        udpReceiverJobs.remove(deviceSn)?.cancel()
         try { P2PSession.getInstance(context).disconnectToPeer(deviceSn) } catch (_: Throwable) {}
         connectedFlows[deviceSn]?.value = false
         frameFlows[deviceSn]?.value = null
+    }
+
+    private suspend fun runUdpVideoReceiver(deviceSn: String, cloudIp: String, port: Int, pk: String) = coroutineScope {
+        val sn = appSn ?: run { Log.w(TAG, "no appSn yet, can't start UDP receiver"); return@coroutineScope }
+        var socket: DatagramSocket? = null
+        try {
+            socket = DatagramSocket()
+            socket.soTimeout = 250
+        } catch (t: Throwable) {
+            Log.e(TAG, "DatagramSocket open failed", t); return@coroutineScope
+        }
+        val addr = try { InetAddress.getByName(cloudIp) } catch (t: Throwable) {
+            Log.e(TAG, "resolve $cloudIp failed", t); socket.close(); return@coroutineScope
+        }
+        Log.i(TAG, "UDP video receiver up: localPort=${socket.localPort} → $cloudIp:$port pk=${pk.take(6)}…")
+
+        // NAT-punch keepalive: send a `cmd:sync` packet every 2s so the cloud
+        // relay can map us back through NAT.
+        val natJob = launch {
+            while (isActive) {
+                try {
+                    val pkt = buildSyncPacket(sn, deviceSn, from = 1)
+                    socket.send(DatagramPacket(pkt, pkt.size, addr, port))
+                } catch (t: Throwable) {
+                    Log.w(TAG, "sync send to $cloudIp:$port failed: ${t.message}")
+                }
+                delay(2000)
+            }
+        }
+
+        var rxPkts = 0
+        var rxBytes = 0L
+        var rtpParsed = 0
+        var rtpNull = 0
+        var lastLog = System.currentTimeMillis()
+        val buf = ByteArray(1600)
+        try {
+            while (isActive) {
+                val datagram = DatagramPacket(buf, buf.size)
+                try {
+                    socket.receive(datagram)
+                } catch (e: SocketTimeoutException) { continue }
+                catch (t: Throwable) {
+                    if (!isActive) break
+                    Log.w(TAG, "udp recv error: ${t.message}"); delay(50); continue
+                }
+                rxPkts++
+                rxBytes += datagram.length
+                val raw = datagram.data.copyOf(datagram.length)
+                if (rxPkts <= 3) {
+                    val hex = raw.take(16).joinToString(" ") { "%02x".format(it.toInt() and 0xff) }
+                    Log.i(TAG, "udp rx#$rxPkts len=${raw.size} first16=[$hex]")
+                }
+                val decoded = xorDecodeIfNeeded(raw) ?: continue
+                if (decoded.size < 12 || decoded[0] != 0x80.toByte()) continue
+                val frame = try { n1.c.k(decoded, pk) } catch (t: Throwable) {
+                    Log.w(TAG, "n1.c.k threw on udp pkt", t); null
+                }
+                if (frame == null) {
+                    rtpNull++
+                } else {
+                    rtpParsed++
+                    sessionByDevice.getOrPut(deviceSn) { n1.a() }.f(frame)
+                }
+                val now = System.currentTimeMillis()
+                if (now - lastLog > 2000) {
+                    Log.i(TAG, "udp $deviceSn: pkts=$rxPkts bytes=$rxBytes rtp-parsed=$rtpParsed rtp-null=$rtpNull")
+                    lastLog = now
+                }
+            }
+        } finally {
+            natJob.cancel()
+            try { socket.close() } catch (_: Throwable) {}
+            Log.i(TAG, "UDP video receiver stopped for $deviceSn")
+        }
+    }
+
+    /**
+     * Inverse of y1.e.O: if the packet begins with the AIWIT relay marker 0x90,
+     * drop the 12-byte header and XOR-decrypt the rest. Otherwise return the
+     * packet unchanged.
+     */
+    private fun xorDecodeIfNeeded(data: ByteArray): ByteArray? {
+        if (data.isEmpty()) return null
+        if (data[0] != 0x90.toByte()) return data
+        if (data.size <= 12) return null
+        val out = ByteArray(data.size - 12)
+        for (i in out.indices) {
+            out[i] = (data[i + 12].toInt() xor XOR_KEY[i % XOR_KEY.size].toInt()).toByte()
+        }
+        return out
+    }
+
+    /**
+     * Equivalent of `LiveViewForTwoWayIntercom.v2`: build a `cmd:sync` JSON,
+     * sign it with the same MD5(salt+udid+cmd) scheme as the cmd-server, then
+     * wrap it with `y1.e.O` (12-byte 0x90 header + XOR-encrypted body).
+     */
+    private fun buildSyncPacket(appSn: String, peerSn: String, from: Int): ByteArray {
+        val k = "0" + md5Hex(CMD_SIGN_SALT + appSn + "sync")
+        val json = JSONObject().apply {
+            put("cmd", "sync")
+            put("udid", appSn)
+            put("peer", peerSn)
+            put("type", "udp")
+            put("k", k)
+            put("from", from)
+        }.toString().toByteArray(Charsets.UTF_8)
+        val encrypted = ByteArray(json.size)
+        for (i in json.indices) {
+            encrypted[i] = (json[i].toInt() xor XOR_KEY[i % XOR_KEY.size].toInt()).toByte()
+        }
+        val out = ByteArray(encrypted.size + 12)
+        out[0] = 0x90.toByte()
+        System.arraycopy(encrypted, 0, out, 12, encrypted.size)
+        return out
+    }
+
+    private fun md5Hex(s: String): String {
+        val md = MessageDigest.getInstance("MD5")
+        val digest = md.digest(s.toByteArray(Charsets.UTF_8))
+        val sb = StringBuilder(32)
+        for (b in digest) sb.append("%02x".format(b.toInt() and 0xff))
+        return sb.toString()
     }
 
     private suspend fun pollFramesLoop(deviceSn: String) {
