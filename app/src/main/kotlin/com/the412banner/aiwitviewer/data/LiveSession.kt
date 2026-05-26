@@ -192,11 +192,18 @@ class LiveSession(private val context: Context) {
             }
         }
 
-        // Start (or restart) the cloud-relay UDP video receiver for this camera.
+        // Start the cloud-relay UDP video receiver for this camera, exactly once
+        // per session. AIWIT's `f3()` gates the same way via the `f15993q0` flag,
+        // because cancel-and-restart blows away the NAT-mapped local port that
+        // the cloud is already streaming to.
         if (cloudIp.isNotBlank() && videoPort > 0) {
-            udpReceiverJobs.remove(deviceSn)?.cancel()
-            udpReceiverJobs[deviceSn] = scope.launch {
-                runUdpVideoReceiver(deviceSn, cloudIp, videoPort, pk)
+            val existing = udpReceiverJobs[deviceSn]
+            if (existing == null || !existing.isActive) {
+                udpReceiverJobs[deviceSn] = scope.launch {
+                    runUdpVideoReceiver(deviceSn, cloudIp, videoPort, pk)
+                }
+            } else {
+                Log.i(TAG, "UDP video receiver for $deviceSn already running — pk refreshed only")
             }
         }
     }
