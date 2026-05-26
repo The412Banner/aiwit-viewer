@@ -327,3 +327,89 @@ only small handshake-sized UDP packets from the camera.
 - All cloud-recording playback + browsing features remain functional
   and device-verified.
 
+
+---
+
+## Session 3 — live-view BREAKTHROUGHS (2026-05-25 late)
+
+### 1. preview-finish unblocks fast-streaming notification
+Cloud was returning `watcher_count > 0` from a stale viewer slot.
+Solution: send `cmd:preview-finish` BEFORE every `cmd:wakeup`. After
+this change the flow becomes (commit 906b901):
+```
+TX preview-finish        ─┐
+TX wakeup                 │ unblocks cloud
+RX preview-finish ok      │
+RX wakeup-reply pk=…ip=…  ─┤  ← per-session pk + cloud_ip + video_port
+TX devices-state          │
+TX wakeup-retry           │
+RX preview-start NOTIF    │  ← state=1, contains pk again
+RX fast-streaming NOTIF   ─┘  ← THE breakthrough — cloud now streaming
+```
+
+### 2. Video is NOT via libVCTP2P — it's a separate UDP socket
+The `p2pReceiveDataCall` callback only carries control bytes (1-byte
+heartbeats and 370-byte control frames). The actual video bytes come
+through a UDP DatagramSocket the APP opens itself.
+
+Found in AIWIT's `LiveViewForTwoWayIntercom.class f.run()`:
+- Open `DatagramSocket()` (random local port)
+- Send NAT-punch sync every 2s to `cloud_ip:video_port`
+- Receive UDP from same — packets are either:
+  - sync echoes (header `0x90`, XOR-wrapped JSON)
+  - RTPv2 video (header `0x80 0x60 …`, AES-encrypted payload after the
+    12-byte RTP header, key index in SSRC field)
+
+Sync packet structure (`y1.e.O`):
+```
+[0x90] [11 zero bytes] [JSON bytes XOR'd with "jq_Q#`@Ui{&Nx:1HVMrvw$zKT[GX<9Wg"]
+JSON = {"cmd":"sync","udid":"<APK_id>","peer":"EKDB_…","type":"udp",
+        "k":"0"+MD5(salt+udid+"sync"),"from":1}
+salt = "eead%Hb27Zf$v#vG"  (same as cmd-server signing)
+```
+
+Implementation: `LiveSession.runUdpVideoReceiver` + `buildSyncPacket` +
+`xorDecodeIfNeeded` — commit `89d1e54`.
+
+Device-verified: 22 pkts/s × ~570 bytes ≈ 100 Kbps. Packet shapes
+confirmed via hex dump (e.g. `80 60 00 02 00 00 0e 79 04 05 00 00 …`).
+
+### 3. JADX sign-extension trap in n1/c.java
+After UDP receiver was working, `n1.c.k` still returned null on EVERY
+RTPv2 packet (not throwing — cleanly returning null).
+
+Root cause:
+```java
+// JADX wrote (compiles to byte & byte → both signed-int-promoted):
+public static int c(byte b8) { return b8 & UnsignedBytes.MAX_VALUE; }
+// AIWIT's original was b8 & 0xFF (byte & int → int-promoted byte AND'd
+// with 0x000000FF → correctly unsigned)
+```
+
+`UnsignedBytes.MAX_VALUE` is `(byte)-1`. So `byte & byte` triggers
+JLS §15.22.1 sign-extending int promotion: `(byte)0x80 & (byte)0xFF`
+becomes `-128 & -1` = `-128`. Then in `k()`, the check `128 ≤ c(bArr[0])
+≤ 131` always fails for `bArr[0]=0x80` (it returns -128, not 128), and
+`k()` falls through to `return null`.
+
+Fix: replace `UnsignedBytes.MAX_VALUE` with `0xFF` everywhere in
+`n1/{a,b,c}.java` (9 + 1 + 1 occurrences). Commit `fdb8a02`. Awaiting
+CI build + device verify that `n1.c.k` now returns non-null cVar and
+that EZMediaUtils.decodeFrameWithData decodes the AES-decrypted RTP
+payload into Bitmaps.
+
+### Iteration cadence
+Per [[feedback_aiwit_autonomous_iteration_loop]] the user has asked
+for an autonomous build→install→test→fix loop (no pausing between
+iterations) until live view shows frames. Iteration is push to main →
+gh run watch → gh run download → pm install -r → `input tap 540 1095`
+on the camera list → tail logcat for the per-iteration signal → push
+next fix.
+
+### State at session 3 mid-loop
+- All cmd-server protocol matches AIWIT MITM capture
+- UDP video relay receiver running and confirmed delivering real video
+- Sign-extension fix in flight on CI as `fdb8a02`
+- Next: verify `rtp-parsed > 0` after fix lands, then confirm the
+  jitter-buffer poller produces decoded Bitmaps that render in the
+  CameraDetailScreen video area
