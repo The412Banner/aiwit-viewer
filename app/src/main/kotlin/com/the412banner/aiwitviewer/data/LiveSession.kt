@@ -90,16 +90,21 @@ class LiveSession(private val context: Context) {
             @Throws(JSONException::class, IOException::class)
             override fun p2pReceiveDataCall(sn: String?, bytes: ByteArray?, len: Int) {
                 if (bytes == null) return
-                // Important: AIWIT's listener IGNORES the `sn` arg and uses the
-                // pk from the most recent preview-start (LiveViewForTwoWayIntercom.f15957e2).
-                // The lib passes "12345678" (or similar placeholder) as sn instead of the
-                // device SN, so a `pkByDevice[sn]` lookup always misses.
-                // We route through the currently-active camera's pk + jitter buffer.
+                // AIWIT's listener IGNORES sn AND len; it just runs n1.c.k(bArr, pk)
+                // on the full byte[]. `len` appears to be a packet-type flag (0/1),
+                // not a byte count. So we log bytes.size, not len.
                 val activeSn = activeDeviceSn
                 val pk = activePk
                 val stats = rxStats.getOrPut(activeSn ?: "no-active") { RxStats() }
                 stats.rxBytes++
-                stats.rxTotal += len
+                stats.rxTotal += bytes.size
+                // Sample first 16 bytes of the first 5 packets per session so we
+                // can see the actual framing on the wire.
+                if (stats.rxBytes <= 5) {
+                    val hex = bytes.take(minOf(bytes.size, 16))
+                        .joinToString(" ") { "%02x".format(it.toInt() and 0xff) }
+                    Log.i(TAG, "RX hex#${stats.rxBytes} len-arg=$len bytes.size=${bytes.size} sn=$sn first16=[$hex]")
+                }
                 if (activeSn == null) return
                 val frame = try {
                     n1.c.k(bytes, pk)
@@ -114,7 +119,7 @@ class LiveSession(private val context: Context) {
                     buf.f(frame)
                 }
                 if (stats.rxBytes % 50 == 0) {
-                    Log.i(TAG, "RX active=$activeSn (cb-sn=$sn): ${stats.rxBytes} cbs, ${stats.rxTotal} bytes, parsed=${stats.parseOk}, null=${stats.parseNull}, pk=${pk?.take(6)}...")
+                    Log.i(TAG, "RX active=$activeSn (cb-sn=$sn): ${stats.rxBytes} cbs, totalBytes=${stats.rxTotal}, parsed=${stats.parseOk}, null=${stats.parseNull}, pk=${pk?.take(6)}...")
                 }
             }
         }
