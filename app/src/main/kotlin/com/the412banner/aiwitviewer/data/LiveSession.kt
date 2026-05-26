@@ -33,6 +33,8 @@ class LiveSession(private val context: Context) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private class RxStats(var rxBytes: Int = 0, var rxTotal: Long = 0, var parseOk: Int = 0, var parseNull: Int = 0)
     private val rxStats = mutableMapOf<String, RxStats>()
+    @Volatile private var activeDeviceSn: String? = null
+    @Volatile private var activePk: String? = null
     private val pkByDevice = mutableMapOf<String, String>()
     private val sessionByDevice = mutableMapOf<String, n1.a>()
     private val pollerJobs = mutableMapOf<String, Job>()
@@ -87,12 +89,18 @@ class LiveSession(private val context: Context) {
             }
             @Throws(JSONException::class, IOException::class)
             override fun p2pReceiveDataCall(sn: String?, bytes: ByteArray?, len: Int) {
-                if (sn == null || bytes == null) return
-                // Granular diagnostics — counters per camera, logged every 50 callbacks.
-                val stats = rxStats.getOrPut(sn) { RxStats() }
+                if (bytes == null) return
+                // Important: AIWIT's listener IGNORES the `sn` arg and uses the
+                // pk from the most recent preview-start (LiveViewForTwoWayIntercom.f15957e2).
+                // The lib passes "12345678" (or similar placeholder) as sn instead of the
+                // device SN, so a `pkByDevice[sn]` lookup always misses.
+                // We route through the currently-active camera's pk + jitter buffer.
+                val activeSn = activeDeviceSn
+                val pk = activePk
+                val stats = rxStats.getOrPut(activeSn ?: "no-active") { RxStats() }
                 stats.rxBytes++
                 stats.rxTotal += len
-                val pk = pkByDevice[sn]
+                if (activeSn == null) return
                 val frame = try {
                     n1.c.k(bytes, pk)
                 } catch (t: Throwable) {
@@ -102,11 +110,11 @@ class LiveSession(private val context: Context) {
                     stats.parseNull++
                 } else {
                     stats.parseOk++
-                    val buf = sessionByDevice.getOrPut(sn) { n1.a() }
+                    val buf = sessionByDevice.getOrPut(activeSn) { n1.a() }
                     buf.f(frame)
                 }
                 if (stats.rxBytes % 50 == 0) {
-                    Log.i(TAG, "RX $sn: ${stats.rxBytes} cbs, ${stats.rxTotal} bytes, parsed=${stats.parseOk}, null=${stats.parseNull}, pk-set=${pk != null}")
+                    Log.i(TAG, "RX active=$activeSn (cb-sn=$sn): ${stats.rxBytes} cbs, ${stats.rxTotal} bytes, parsed=${stats.parseOk}, null=${stats.parseNull}, pk=${pk?.take(6)}...")
                 }
             }
         }
@@ -131,38 +139,35 @@ class LiveSession(private val context: Context) {
 
     private val connectJobs = mutableMapOf<String, Job>()
 
-    /** Hand off the cmd-server's `preview-start` reply: cache pk, kick connectToPeer + poller. */
+    /** Hand off the cmd-server's `wakeup`/`preview-start` reply: cache pk, kick connectToPeer + poller. */
     fun onPreviewStartReply(deviceSn: String, pk: String) {
-        Log.i(TAG, "onPreviewStartReply $deviceSn pk=$pk (cached) — kicking connectToPeer")
+        // First call wins as active. Subsequent calls (e.g. preview-start notification
+        // arriving after the wakeup reply for the same camera) just refresh the pk.
+        val firstForThisSn = activeDeviceSn != deviceSn
+        activeDeviceSn = deviceSn
+        activePk = pk
         pkByDevice[deviceSn] = pk
+        Log.i(TAG, "onPreviewStartReply $deviceSn pk=$pk (active=$deviceSn, firstTime=$firstForThisSn)")
+
         val session = P2PSession.getInstance(context)
 
-        // Ensure a jitter buffer + poller exist for this camera.
         sessionByDevice.getOrPut(deviceSn) { n1.a() }
         pollerJobs.getOrPut(deviceSn) {
             scope.launch { pollFramesLoop(deviceSn) }
         }
 
-        // Retry connectToPeer every 4s for up to 60s. The lib's connect goes
-        // through the relay, which only knows about the camera once it's
-        // physically online and registered — typically 5-20s after wakeup.
-        connectJobs.remove(deviceSn)?.cancel()
-        connectJobs[deviceSn] = scope.launch {
-            repeat(15) { attempt ->
-                if (connectedFlows[deviceSn]?.value == true) {
-                    Log.i(TAG, "$deviceSn connected, stopping retries")
-                    return@launch
-                }
-                try {
-                    if (attempt > 0) session.disconnectToPeer(deviceSn)
-                    session.connectToPeer(deviceSn)
-                    Log.i(TAG, "$deviceSn connectToPeer attempt #${attempt + 1}")
-                } catch (t: Throwable) {
-                    Log.w(TAG, "$deviceSn connectToPeer attempt #${attempt + 1} threw", t)
-                }
-                delay(4000)
+        // Call connectToPeer ONCE. The lib's internal retry/state machine handles
+        // the rest. Calling repeatedly was resetting state and confusing the lib.
+        if (firstForThisSn) {
+            try {
+                session.disconnectToPeer(deviceSn)
+            } catch (_: Throwable) {}
+            try {
+                session.connectToPeer(deviceSn)
+                Log.i(TAG, "$deviceSn connectToPeer called once")
+            } catch (t: Throwable) {
+                Log.e(TAG, "connectToPeer threw", t)
             }
-            Log.w(TAG, "$deviceSn — gave up retrying connectToPeer after 60s")
         }
     }
 
