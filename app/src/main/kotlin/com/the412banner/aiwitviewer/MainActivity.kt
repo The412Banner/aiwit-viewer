@@ -48,10 +48,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         creds = CredentialStore(this)
         aliases = LocalAliasStore(this)
-        // EXPERIMENT: hijack AIWIT's UDID to test the primary-viewer hypothesis.
-        // If frames flow with this, the cloud is gating live-view on UDID identity.
-        val appSn = "APK_d684c706-edff-45da-91b4-3e4b84276194"
-        creds.appSn = appSn
+        val appSn = creds.appSn ?: "APK_${UUID.randomUUID()}".also { creds.appSn = it }
         client = AiwitClient(appSn)
         live = LiveSession(applicationContext)
 

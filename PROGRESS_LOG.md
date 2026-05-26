@@ -239,3 +239,91 @@ every 200ms — it's polling for known peer addresses and finding none.
   except live frames (login + cameras list + recordings playback all
   device-verified).
 
+---
+
+## 2026-05-25 — Session 2 cont'd: AIWIT cmd-server protocol MITM'd, last mile blocked
+
+### What landed this session
+- **MITM'd AIWIT's cmd-server** via iptables NAT REDIRECT + Python TLS proxy.
+  AIWIT uses raw `SSLSocket` (not OkHttp), so the WiFi proxy doesn't apply —
+  needed kernel-level redirect with UID exemption for the proxy itself.
+  Script + cert at `/data/data/com.termux/files/home/aiwit-re/captures/`,
+  staged to `/sdcard/Download/` so it could run as UID 0 via the bridge.
+- **Captured AIWIT's actual live-view cmd-server flow** (different from
+  what we'd been doing):
+  ```
+  app-login (platform_id=1, pushToken="")
+  heartbeat
+  wakeup peer:<sn>
+  -- server: wakeup REPLY with err_no:0, pk, ip, video_port, audio_port,
+             speak_port  ← session params arrive on the wakeup reply
+  devices-state
+  wakeup (retry)
+  -- server: preview-start NOTIFICATION (msg_type:"notification", state:1)
+             ← arrives ~3s after wakeup reply, signals camera is fully
+               online and registered with relay
+  -- server: fast-streaming NOTIFICATION ← THE actual streaming trigger
+  ping every 10s (keepalive — without this the relay drops the peer)
+  preview-finish (on close)
+  ```
+- **Implemented all of it**: corrected `CloudMessagingClient` (platform_id=1,
+  pushToken="", new sendPing/sendDevicesState methods), corrected
+  `MainActivity.onSelectDevice` to replay AIWIT's exact flow, corrected
+  `onMessage` to also use the wakeup reply for pk.
+- **P2P side now connects all the way**:
+  - `cmd:"connect",err_no:0` from relay (vs prior `peer not exist!`)
+  - `state:3` reached (connected)
+  - `ready / can-recv / can-schedule` sent by lib
+  - `p2pReceiveDataCall` fires (bytes flow from native into Kotlin)
+- **`Nat.getNatType()` polled periodically** (kicks lib's NAT machinery
+  — was needed to advance state).
+- **Routed callbacks via active-camera pk** since the lib passes
+  `sn="12345678"` (placeholder) instead of the device SN — AIWIT's own
+  listener ignores the sn arg and uses the activity-local pk.
+
+### The remaining gap
+Bytes ARE arriving at the JNI callback layer (1300+ callbacks per test
+session). But every callback is **1 byte** and never parses as RTP —
+they're lib-internal NAT keepalives, not real video frames.
+
+The cloud is **not pushing us** `cmd:"preview-start"` or
+`cmd:"fast-streaming"` notifications, even with AIWIT's exact UDID
+hijacked. Without `fast-streaming`, the camera firmware never advances
+from "handshake mode" to "stream mode" — confirmed by tcpdump showing
+only small handshake-sized UDP packets from the camera.
+
+### Candidate explanations (untested)
+1. TLS-handshake fingerprint differs (cipher suites, extensions) —
+   Android `SSLSocket` defaults vs AIWIT's library's preferences. Cloud
+   might pin notifications to fingerprints it recognizes.
+2. Cloud-side "latest session wins" stickiness based on TCP source port /
+   TLS session ID / connection age — when AIWIT was last active, its
+   session was the "primary", and our session is treated as a passive
+   observer.
+3. Hidden REST call AIWIT makes to api.v2.gdxp.com that primes the cloud
+   to expect a cmd-server session. We MITM'd cmd-server but not REST in
+   the same window.
+4. Some kind of device fingerprinting we don't reproduce.
+
+### Next-session entry points
+- Concurrent MITM of BOTH api.v2.gdxp.com (HTTPS REST) AND
+  8.222.190.34:8891 (cmd-server) during a SINGLE AIWIT live-view session
+  to find any REST call we missed.
+- TLS handshake comparison: tshark the AIWIT TLS handshake vs ours
+  (Client Hello cipher list, extensions).
+- Look for any state on the Android side (SharedPreferences, files in
+  `/data/data/com.eken.aiwit/`) that AIWIT writes after first install
+  and might be used as device fingerprint.
+
+### Repo state at session 2 end (revised)
+- Live-view foundation: all in place (native libs, JNI wrappers,
+  n1.* protocol code, decryption pipeline, P2P session orchestration,
+  active-camera pk routing, NAT-poll loop, retry-less single
+  connectToPeer, ping-keepalive every 10s).
+- Cmd-server protocol: 100% matches AIWIT's captured flow.
+- Result: relay connect succeeds, bytes arrive at callback, but
+  camera never actually streams real frames because the cloud
+  doesn't issue `fast-streaming` to our session.
+- All cloud-recording playback + browsing features remain functional
+  and device-verified.
+
